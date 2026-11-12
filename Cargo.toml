@@ -1,0 +1,21 @@
+[package]
+name = "ultra"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of ULTRA (ULTRA Locates Tandemly Repetitive Areas)"
+license = "BSD-3-Clause"
+repository = "https://github.com/TravisWheelerLab/ULTRA"
+
+[lib]
+name = "ultra"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ultra"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+debug = false
