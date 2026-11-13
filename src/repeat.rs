@@ -13,11 +13,35 @@
 //! `None` is the C++ null pointer.
 
 use crate::sequence_window::SequenceWindow;
-use crate::symbol::{char_for_symbol, symbol_for_char, Symbol, NUM_SYMBOLS};
+use crate::symbol::{char_for_symbol, symbol_for_char, Symbol, NUM_SYMBOLS, N_UNK};
 use crate::umatrix::{UMatrix, CT_DELETION, CT_INSERTION, CT_MATCH};
 
 pub const OC_NONE: i32 = 0;
 pub const OC_TRUE: i32 = 1;
+
+/// The indel test compares two periods of bases, and at least this many.
+const INDEL_TEST_MIN_BASES: u64 = 12;
+/// Added to the agreement score of the indel test for a base that equals the
+/// first copy's base in its column. A matching base counts the same in the
+/// logo.
+const INDEL_TEST_FIRST_COPY_WEIGHT: i32 = 4;
+
+/// Scores for aligning a repeat to its consensus, and how many times the
+/// alignment is repeated with the consensus it produced. On the first
+/// simulated set these give 2,798 exact consensi; eight other score settings
+/// gave between 2,791 and 2,798, and a third pass gave no more (`TODO.md`).
+const REALIGN_MATCH: i32 = 2;
+const REALIGN_MISMATCH: i32 = -2;
+const REALIGN_GAP: i32 = -5;
+const REALIGN_PASSES: usize = 2;
+
+/// What one walk along the traceback produces.
+struct LogoWalk {
+    logo: Vec<i32>,
+    mismatches: i32,
+    insertions: i32,
+    deletions: i32,
+}
 
 /// Byte `i` of `s`, or 0 when `i` is at or past the end. Mirrors
 /// `std::string::operator[]`, which returns `'\0'` at `size()`; past that
@@ -181,20 +205,75 @@ impl RepeatRegion {
         self.logo.as_ref().expect("logo is null")[i * NUM_SYMBOLS + j]
     }
 
-    fn alloc_logo(&mut self) -> Vec<i32> {
+    fn alloc_logo(&self) -> Vec<i32> {
         let period = self.repeat_period as i64 as usize;
         // Rows are zeroed; the unused tail is zero too (garbage in C++, never read).
         vec![0i32; period * (NUM_SYMBOLS + 1)]
     }
 
-    /// C++ `CreateLogo`: counts symbols per unit position by walking the
-    /// matrix traceback forward from `window_start`, and accumulates
+    /// Builds the logo (symbol counts per unit position) and accumulates
     /// `mismatches`, `insertions` and `deletions`.
-    pub fn create_logo(&mut self, window: &SequenceWindow, matrix: &UMatrix) {
+    ///
+    /// With `upstream_consensus` this is C++ `CreateLogo` as corrected in
+    /// TravisWheelerLab/ULTRA pull request 95: one walk along the matrix
+    /// traceback that takes every insertion and deletion the model calls as
+    /// real. That walk puts later copies in the wrong columns when the model
+    /// calls a deletion in a copy that is full length, or misses an indel.
+    ///
+    /// Without it, the three counters still come from that walk, so they
+    /// agree with the stored traceback. `create_logo` then builds the logo
+    /// in two steps:
+    ///
+    /// 1. It repeats the walk, and at each insertion or deletion compares
+    ///    the bases that follow with the logo so far, once at the column the
+    ///    indel implies and once at the column without it. It ignores the
+    ///    indel when the column without it agrees better.
+    /// 2. It aligns the whole repeat to the consensus of that logo, treating
+    ///    the consensus as a circle, and counts each base in the column it
+    ///    aligns to. It does this [`REALIGN_PASSES`] times.
+    ///
+    /// On simulated arrays this gave the planted unit more often than the
+    /// single walk (figures in `TODO.md`).
+    pub fn create_logo(
+        &mut self,
+        window: &SequenceWindow,
+        matrix: &UMatrix,
+        upstream_consensus: bool,
+    ) {
+        let walk = self.walk_logo(window, matrix, false);
+        self.mismatches += walk.mismatches;
+        self.insertions += walk.insertions;
+        self.deletions += walk.deletions;
+
+        let mut logo = walk.logo;
+        if !upstream_consensus {
+            // With no indel on the path there is nothing to test, and the
+            // second walk would repeat the first.
+            if walk.insertions != 0 || walk.deletions != 0 {
+                logo = self.walk_logo(window, matrix, true).logo;
+            }
+            for _ in 0..REALIGN_PASSES {
+                logo = self.realign_logo(&logo, window.seq());
+            }
+        }
+        self.logo = Some(logo);
+    }
+
+    /// One walk along the matrix traceback from `window_start`, comparing
+    /// each base with the base the model aligned it to in the previous copy.
+    /// A matching base counts 4 in its column of the logo and any other base
+    /// counts 1. `test_indels` turns on the indel test described at
+    /// [`create_logo`](Self::create_logo).
+    fn walk_logo(&self, window: &SequenceWindow, matrix: &UMatrix, test_indels: bool) -> LogoWalk {
         let mut logo = self.alloc_logo();
+        let mut mismatches: i32 = 0;
+        let mut insertions: i32 = 0;
+        let mut deletions: i32 = 0;
+
         let period = self.repeat_period;
         let period_u = period as i64 as u64;
         let seq = window.seq();
+        let repeat_end = self.window_start.wrapping_add(self.repeat_length);
 
         // `backset`, `insertionReset` and `deletionReset` are dropped: the
         // resets start at -1 and only decrement, so the branches that read
@@ -210,14 +289,38 @@ impl RepeatRegion {
         }
 
         let mut p: i32 = 0;
-        let mut modp: i32 = 0;
+
+        // Traceback columns of the indels the test ignored, in increasing
+        // order, and how far the previous-copy side has read through them.
+        let mut ignored: Vec<u64> = Vec::new();
+        let mut ignored_seen: usize = 0;
+
+        // How well the bases from `start` on agree with the logo so far and
+        // with the first copy, if the base at `start` sits in column `col0`.
+        let agreement = |logo: &[i32], start: u64, col0: i32| -> i32 {
+            let len = (2 * period_u).max(INDEL_TEST_MIN_BASES);
+            let mut score = 0i32;
+            for j in 0..len {
+                let pos = start + j;
+                if pos >= repeat_end || pos as usize >= seq.len() {
+                    break;
+                }
+                let col = (col0 as i64 + j as i64).rem_euclid(period as i64) as usize;
+                let sym = seq[pos as usize] as usize;
+                score += logo[col * NUM_SYMBOLS + sym];
+                if seq[(self.window_start + col as u64) as usize] as usize == sym {
+                    score += INDEL_TEST_FIRST_COPY_WEIGHT;
+                }
+            }
+            score
+        };
 
         let mut i: u64 = 0;
         while i < endpoint {
             let frow = matrix.traceback[fplace as usize];
             let brow = matrix.traceback[bplace as usize];
 
-            let fdesc = matrix.cell_descriptions[frow as usize];
+            let mut fdesc = matrix.cell_descriptions[frow as usize];
             let mut bdesc = matrix.cell_descriptions[brow as usize];
 
             // unsigned long < int: the int converts to unsigned long.
@@ -225,21 +328,44 @@ impl RepeatRegion {
                 bdesc = matrix.cell_descriptions[0];
             }
 
+            if test_indels {
+                // A deletion of k moves the next base k columns on; an
+                // insertion of n leaves the base after it where it was.
+                let keep = if fdesc.cell_type == CT_DELETION {
+                    let k = fdesc.indel_number;
+                    agreement(&logo, fplace, p + k) >= agreement(&logo, fplace, p)
+                } else if fdesc.cell_type == CT_INSERTION {
+                    let n = fdesc.indel_number;
+                    let after = fplace.wrapping_add(n as i64 as u64);
+                    agreement(&logo, after, p) >= agreement(&logo, after, p + n)
+                } else {
+                    true
+                };
+                if !keep {
+                    ignored.push(fplace);
+                    fdesc = matrix.cell_descriptions[0];
+                }
+
+                // The same indel, met again one copy later on the other side.
+                while ignored_seen < ignored.len() && ignored[ignored_seen] < bplace {
+                    ignored_seen += 1;
+                }
+                if ignored.get(ignored_seen) == Some(&bplace)
+                    && (bdesc.cell_type == CT_DELETION || bdesc.cell_type == CT_INSERTION)
+                {
+                    bdesc = matrix.cell_descriptions[0];
+                }
+            }
+
             if fdesc.cell_type == CT_INSERTION {
-                self.insertions += fdesc.indel_number;
+                insertions += fdesc.indel_number;
                 i = i.wrapping_add(fdesc.indel_number as i64 as u64);
                 fplace = fplace.wrapping_add(fdesc.indel_number as i64 as u64);
             } else if fdesc.cell_type == CT_DELETION {
-                self.deletions += fdesc.indel_number;
+                deletions += fdesc.indel_number;
                 bplace = bplace.wrapping_add(fdesc.indel_number as i64 as u64);
                 p += fdesc.indel_number;
-                modp += fdesc.indel_number + 1;
-            } else {
-                modp += 1;
             }
-
-            modp %= period;
-            let _ = modp;
 
             if bdesc.cell_type == CT_INSERTION {
                 bplace = bplace.wrapping_add(bdesc.indel_number as i64 as u64);
@@ -249,25 +375,20 @@ impl RepeatRegion {
                 // (weight 1, as there is no base to compare them with) and
                 // the phase moves past them. Upstream 1.2.2 does neither,
                 // which shifts every later logo column by the size of the
-                // deletion. Known limit: if the model calls a deletion in a
-                // copy that is in fact full length, moving the phase leaves
-                // it off instead (see TODO.md).
+                // deletion.
                 for j in 0..bdesc.indel_number.max(0) {
                     let fp = fplace.wrapping_add(j as u64);
-                    if fp < self.window_start.wrapping_add(self.repeat_length) {
+                    if fp < repeat_end {
                         let col = ((p + j) % period) as usize;
                         logo[col * NUM_SYMBOLS + seq[fp as usize] as usize] += 1;
                     }
                 }
                 fplace = fplace.wrapping_add(bdesc.indel_number as i64 as u64);
                 i = i.wrapping_add(bdesc.indel_number as i64 as u64);
-                // Known limit: if the model calls a deletion in a copy that
-                // is in fact full length, this leaves the phase off instead
-                // (see TODO.md).
                 p += bdesc.indel_number;
             }
 
-            if fplace >= self.window_start.wrapping_add(self.repeat_length) {
+            if fplace >= repeat_end {
                 break;
             }
 
@@ -278,7 +399,7 @@ impl RepeatRegion {
 
             let idx = p as usize * NUM_SYMBOLS + s as usize;
             if s != sb {
-                self.mismatches += 1;
+                mismatches += 1;
                 logo[idx] += 1;
             } else {
                 logo[idx] += 4;
@@ -290,7 +411,135 @@ impl RepeatRegion {
             i = i.wrapping_add(1);
         }
 
-        self.logo = Some(logo);
+        LogoWalk {
+            logo,
+            mismatches,
+            insertions,
+            deletions,
+        }
+    }
+
+    /// Aligns the repeat to the consensus of `logo` and returns a logo with
+    /// one count for each aligned base, in the column it aligns to.
+    ///
+    /// The consensus is treated as a circle, with column 0 following the
+    /// last column, so the alignment runs through as many copies as the
+    /// repeat has and may start in any column. A base is aligned to a column
+    /// ([`REALIGN_MATCH`] or [`REALIGN_MISMATCH`]), or is an insertion, or a
+    /// column is skipped (both [`REALIGN_GAP`]). An unknown base (`N_UNK`)
+    /// scores 0 in every column. Bases called insertions and unknown bases
+    /// are not counted, and a column that ends with no counts keeps its
+    /// counts from `logo`. The traceback takes one byte per base and column.
+    fn realign_logo(&self, logo: &[i32], seq: &[Symbol]) -> Vec<i32> {
+        const DIAGONAL: u8 = 0;
+        const INSERTED_BASE: u8 = 1;
+        const SKIPPED_COLUMN: u8 = 2;
+
+        let mut new_logo = vec![0i32; logo.len()];
+        let period = self.repeat_period.max(0) as usize;
+        let start = self.window_start as usize;
+        let n = (self.repeat_length as usize).min(seq.len().saturating_sub(start));
+        if period == 0 || n == 0 {
+            return new_logo;
+        }
+
+        // Arg-max symbol per column, lowest symbol on ties, as in
+        // `create_consensus_from_logo`.
+        let mut consensus = vec![0usize; period];
+        for (j, c) in consensus.iter_mut().enumerate() {
+            let row = &logo[j * NUM_SYMBOLS..(j + 1) * NUM_SYMBOLS];
+            let mut best = 0;
+            for t in 1..NUM_SYMBOLS {
+                if row[t] > row[best] {
+                    best = t;
+                }
+            }
+            *c = best;
+        }
+
+        let mut traceback = vec![DIAGONAL; n * period];
+        let mut prev = vec![0i32; period];
+        let mut cur = vec![0i32; period];
+        for i in 0..n {
+            let sym = seq[start + i] as usize;
+            let moves = &mut traceback[i * period..(i + 1) * period];
+            for j in 0..period {
+                let before = (j + period - 1) % period;
+                let diagonal = prev[before]
+                    + if sym == N_UNK as usize {
+                        0
+                    } else if sym == consensus[j] {
+                        REALIGN_MATCH
+                    } else {
+                        REALIGN_MISMATCH
+                    };
+                let inserted = prev[j] + REALIGN_GAP;
+                if diagonal >= inserted {
+                    cur[j] = diagonal;
+                    moves[j] = DIAGONAL;
+                } else {
+                    cur[j] = inserted;
+                    moves[j] = INSERTED_BASE;
+                }
+            }
+            // A run of skipped columns may pass from the last column to
+            // column 0, so the row is swept twice.
+            for _ in 0..2 {
+                for j in 0..period {
+                    let before = (j + period - 1) % period;
+                    let skipped = cur[before] + REALIGN_GAP;
+                    if skipped > cur[j] {
+                        cur[j] = skipped;
+                        moves[j] = SKIPPED_COLUMN;
+                    }
+                }
+            }
+            std::mem::swap(&mut prev, &mut cur);
+        }
+
+        // Best column for the last base (lowest column on ties), then back.
+        let mut j = 0;
+        for t in 1..period {
+            if prev[t] > prev[j] {
+                j = t;
+            }
+        }
+        let mut i = n;
+        let mut skipped_in_a_row = 0;
+        while i > 0 {
+            match traceback[(i - 1) * period + j] {
+                DIAGONAL => {
+                    let sym = seq[start + i - 1] as usize;
+                    if sym != N_UNK as usize {
+                        new_logo[j * NUM_SYMBOLS + sym] += 1;
+                    }
+                    j = (j + period - 1) % period;
+                    i -= 1;
+                    skipped_in_a_row = 0;
+                }
+                INSERTED_BASE => {
+                    i -= 1;
+                    skipped_in_a_row = 0;
+                }
+                _ => {
+                    j = (j + period - 1) % period;
+                    skipped_in_a_row += 1;
+                    // Skipping every column gains nothing, so the alignment
+                    // never does it; this only guards the loop.
+                    if skipped_in_a_row > period {
+                        break;
+                    }
+                }
+            }
+        }
+
+        for j in 0..period {
+            let row = j * NUM_SYMBOLS..(j + 1) * NUM_SYMBOLS;
+            if new_logo[row.clone()].iter().all(|&count| count == 0) {
+                new_logo[row.clone()].copy_from_slice(&logo[row]);
+            }
+        }
+        new_logo
     }
 
     /// C++ `CreateLogoWithoutMatrix`: builds the logo from `traceback` and
@@ -884,10 +1133,12 @@ impl RepeatRegion {
 /// starting there, with its logo and consensus built, or `None`. Sets `*pos`
 /// to the column after the repeat (or to `overlap + length` when none is
 /// found). Requires `matrix.calculate_traceback` to have run on `window`.
+/// `upstream_consensus` is passed to [`RepeatRegion::create_logo`].
 pub fn get_next_repeat(
     window: &SequenceWindow,
     matrix: &UMatrix,
     pos: &mut i32,
+    upstream_consensus: bool,
 ) -> Option<Box<RepeatRegion>> {
     if *pos == 0 {
         *pos = 1;
@@ -961,7 +1212,7 @@ pub fn get_next_repeat(
 
     if let Some(r) = region.as_mut() {
         r.read_id = window.read_id;
-        r.create_logo(window, matrix);
+        r.create_logo(window, matrix, upstream_consensus);
         r.create_consensus_from_logo();
     }
 
@@ -1316,6 +1567,22 @@ mod tests {
         del: i32,
         split: bool,
     ) -> (String, Vec<Box<RepeatRegion>>) {
+        run_with(seq, ws, ov, per, ins, del, split, true)
+    }
+
+    /// `run` with the choice of consensus: `upstream` as in the C++ dumps
+    /// the hashes below were taken from, or the default of the crate.
+    #[allow(clippy::too_many_arguments)]
+    fn run_with(
+        seq: &[&str],
+        ws: usize,
+        ov: usize,
+        per: i32,
+        ins: i32,
+        del: i32,
+        split: bool,
+        upstream: bool,
+    ) -> (String, Vec<Box<RepeatRegion>>) {
         let s: Vec<u8> = seq.concat().into_bytes();
         let max_split: i32 = if split { 10 } else { 0 };
         let split_threshold: f32 = 3.5;
@@ -1369,7 +1636,7 @@ mod tests {
             model.matrix.calculate_traceback(pc);
 
             let mut i: i32 = 0;
-            let mut r = get_next_repeat(&window, &model.matrix, &mut i);
+            let mut r = get_next_repeat(&window, &model.matrix, &mut i, upstream);
             while let Some(mut rr) = r {
                 rr.store_sequence(&window);
                 rr.store_traceback(&model.matrix);
@@ -1395,7 +1662,7 @@ mod tests {
                 writeln!(out, "pos={}", i).unwrap();
                 dump(&mut out, "R", &rr);
                 all.push(rr);
-                r = get_next_repeat(&window, &model.matrix, &mut i);
+                r = get_next_repeat(&window, &model.matrix, &mut i, upstream);
             }
             writeln!(out, "endpos={}", i).unwrap();
             k += 1;
@@ -1507,8 +1774,9 @@ mod tests {
         // Upstream 1.2.2 does not advance the logo phase when the previous
         // copy has a deletion, so each deletion shifts the later copies by
         // one column and this array comes out with the unit `GGGGGTTTTT`.
-        for split in [true, false] {
-            let (_, written) = run(FOUR_DELETIONS, 1000, 100, 20, 10, 10, split);
+        for (split, upstream) in [(true, true), (false, true), (true, false), (false, false)] {
+            let (_, written) =
+                run_with(FOUR_DELETIONS, 1000, 100, 20, 10, 10, split, upstream);
             let r = written
                 .iter()
                 .find(|r| r.repeat_period == 10)
@@ -1517,6 +1785,142 @@ mod tests {
             assert_eq!(r.deletions, 4);
             assert_eq!(r.string_consensus_str(), "ACGGTCATTG");
         }
+    }
+
+    /// From the first simulated set (`TODO.md`): copies of `CCTAT` with
+    /// substitutions, insertions and deletions at 10% in total, between
+    /// random flanks (cut to 60 bases each).
+    const NOISY_CCTAT: &[&str] = &[
+        "CTAGATGTCTAAATCGTTCCTGTCAAGTAACAACCGCGGGCACCACCGTGACGGTCCCAGCCTATCCTATCCTATCCTATCCTATCCTAATCCTATCCTA",
+        "TCGATCCTATCCTATCCTTTCCTATCCTATCCCTTTCCCTATCCATCCTATCCTATCCTATCCTATCCTACCTATCCTATCTATCCTCATCCTATCCCTA",
+        "TTCTATCCTATCCTCAGTCGTCAATGGCTCCTGGGGTTATCCAGACACTAGAATGGAGGGAAAAACATCATAGGTTT",
+    ];
+
+    fn best_region(written: &[Box<RepeatRegion>]) -> &RepeatRegion {
+        written
+            .iter()
+            .max_by(|a, b| a.region_score.partial_cmp(&b.region_score).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn indel_test_and_realignment_recover_the_unit_of_a_noisy_array() {
+        // With the single walk the consensus comes out as `ACCCT`, which is
+        // not a rotation of the unit. The model calls four deletions and
+        // three insertions here.
+        let (_, written) = run_with(NOISY_CCTAT, 1000, 100, 20, 10, 10, false, true);
+        let upstream = best_region(&written);
+        assert_eq!(upstream.string_consensus_str(), "ACCCT");
+
+        let (_, written) = run_with(NOISY_CCTAT, 1000, 100, 20, 10, 10, false, false);
+        let r = best_region(&written);
+        assert_eq!(r.string_consensus_str(), "ATCCT");
+
+        // Both report the same region and the same counts.
+        for r in [upstream, r] {
+            assert_eq!((r.sequence_start, r.repeat_length, r.repeat_period), (55, 159, 5));
+            assert_eq!((r.mismatches, r.insertions, r.deletions), (14, 3, 4));
+        }
+    }
+
+    #[test]
+    fn consensus_choice_changes_only_the_consensus() {
+        let inputs: [(&[&str], usize, usize, i32, i32, i32); 4] = [
+            (T1, 2000, 0, 100, 10, 10),
+            (T2, 500, 150, 10, 3, 3),
+            (T2, 300, 120, 6, 6, 6),
+            (NOISY_CCTAT, 1000, 100, 20, 10, 10),
+        ];
+        for (seq, ws, ov, per, ins, del) in inputs {
+            let (_, a) = run_with(seq, ws, ov, per, ins, del, true, true);
+            let (_, b) = run_with(seq, ws, ov, per, ins, del, true, false);
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(&b) {
+                assert_eq!(
+                    (a.sequence_start, a.repeat_length, a.repeat_period),
+                    (b.sequence_start, b.repeat_length, b.repeat_period)
+                );
+                assert_eq!(a.region_score.to_bits(), b.region_score.to_bits());
+                assert_eq!(
+                    (a.mismatches, a.insertions, a.deletions),
+                    (b.mismatches, b.insertions, b.deletions)
+                );
+                assert_eq!(a.traceback, b.traceback);
+                assert_eq!(a.sequence, b.sequence);
+                assert_eq!(a.logo_numbers, b.logo_numbers);
+                assert_eq!(a.splits, b.splits);
+                // An unsplit region lists its own consensus as its one
+                // sub-repeat consensus.
+                if a.splits.as_ref().is_some_and(|s| !s.is_empty()) {
+                    assert_eq!(a.consensi, b.consensi);
+                }
+            }
+        }
+    }
+
+    /// A region over all of `text` (period `unit.len()`), its symbols, and a
+    /// logo with one count for each base of `unit`.
+    fn region_with_unit_logo(text: &str, unit: &str) -> (RepeatRegion, Vec<Symbol>, Vec<i32>) {
+        let seq: Vec<Symbol> = text.bytes().map(symbol_for_char).collect();
+        let mut r = RepeatRegion::new();
+        r.repeat_period = unit.len() as i32;
+        r.window_start = 0;
+        r.repeat_length = seq.len() as u64;
+        let mut logo = r.alloc_logo();
+        for (j, c) in unit.bytes().enumerate() {
+            logo[j * NUM_SYMBOLS + symbol_for_char(c) as usize] = 1;
+        }
+        (r, seq, logo)
+    }
+
+    fn logo_row(logo: &[i32], column: usize) -> &[i32] {
+        &logo[column * NUM_SYMBOLS..(column + 1) * NUM_SYMBOLS]
+    }
+
+    #[test]
+    fn realignment_counts_each_base_in_its_column() {
+        // Six copies of ACGGTCATTG: the second lacks its T at column 4, the
+        // fourth has an extra A after column 2, the fifth has C for T at
+        // column 8. The text starts at column 3.
+        let text = concat!(
+            "GTCATTG",
+            "ACGGTCATTG",
+            "ACGGCATTG",
+            "ACGGTCATTG",
+            "ACGAGTCATTG",
+            "ACGGTCATCG",
+            "ACGGTCATTG",
+            "ACG"
+        );
+        let (r, seq, logo) = region_with_unit_logo(text, "ACGGTCATTG");
+        let new_logo = r.realign_logo(&logo, &seq);
+
+        let count = |column: usize, base: u8| logo_row(&new_logo, column)[symbol_for_char(base) as usize];
+        assert_eq!(count(0, b'A'), 7);
+        assert_eq!(count(2, b'G'), 7);
+        assert_eq!(count(3, b'G'), 7);
+        assert_eq!(count(4, b'T'), 6);
+        assert_eq!((count(8, b'T'), count(8, b'C')), (6, 1));
+        assert_eq!(count(9, b'G'), 7);
+        // Every base but the inserted A is counted once.
+        assert_eq!(new_logo.iter().sum::<i32>(), text.len() as i32 - 1);
+    }
+
+    #[test]
+    fn realignment_ignores_unknown_bases_and_keeps_columns_it_cannot_fill() {
+        // No copy has the T of column 3, so that column keeps the counts it
+        // came with. The Ns of the third copy are counted nowhere.
+        let text = concat!("ACGAC", "ACGAC", "NNNNN", "ACGAC", "ACGAC", "ACGAC");
+        let (r, seq, mut logo) = region_with_unit_logo(text, "ACGTAC");
+        logo[3 * NUM_SYMBOLS + symbol_for_char(b'T') as usize] = 9;
+        let new_logo = r.realign_logo(&logo, &seq);
+
+        assert_eq!(logo_row(&new_logo, 3), logo_row(&logo, 3));
+        for column in 0..6 {
+            assert_eq!(logo_row(&new_logo, column)[N_UNK as usize], 0);
+        }
+        let counted: i32 = (0..6).filter(|&c| c != 3).map(|c| logo_row(&new_logo, c).iter().sum::<i32>()).sum();
+        assert_eq!(counted, 25);
     }
 
     /// A bare region for the join tests: `len` positions of `base` starting

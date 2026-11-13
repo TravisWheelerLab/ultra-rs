@@ -18,6 +18,13 @@
 //! cmake --build upstream/build-fixed
 //! ```
 //!
+//! The Rust binary builds its consensus differently by default (indel test
+//! and realignment, see `RepeatRegion::create_logo`), so every run here sets
+//! `ULTRA_UPSTREAM_CONSENSUS=1`, which makes it build the consensus as the
+//! C++ does. The C++ binary does not read that variable. The unit tests in
+//! `src/repeat.rs` test the default consensus, and `tests/determinism.rs`
+//! checks that it is the same at every thread count.
+//!
 //! Each case runs both binaries in their own scratch directory with the input
 //! linked in as `in.fa` and `argv[0]` forced to `ultra`, because the settings
 //! block that ULTRA writes into its output echoes the command line.
@@ -338,7 +345,9 @@ fn run(bin: &Path, dir: &Path, input_path: &Path, case_args: &[String], with_inp
     fs::copy(crate_root().join("tests/data/tune_file"), dir.join("tune_file")).unwrap();
 
     let mut cmd = Command::new(bin);
-    cmd.arg0("ultra").current_dir(dir);
+    cmd.arg0("ultra")
+        .current_dir(dir)
+        .env("ULTRA_UPSTREAM_CONSENSUS", "1");
     if with_input {
         cmd.arg("in.fa");
     }

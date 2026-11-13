@@ -87,7 +87,7 @@ impl WindowAnalyzer {
         let prev = model.matrix.previous_column_index;
         model.matrix.calculate_traceback(prev);
         let mut i: i32 = 0;
-        let mut r = get_next_repeat(sequence, &model.matrix, &mut i);
+        let mut r = get_next_repeat(sequence, &model.matrix, &mut i, settings.upstream_consensus);
 
         while let Some(mut rr) = r {
             if store_trace_and_sequence {
@@ -121,7 +121,7 @@ impl WindowAnalyzer {
             }
 
             repeats.push(rr);
-            r = get_next_repeat(sequence, &model.matrix, &mut i);
+            r = get_next_repeat(sequence, &model.matrix, &mut i, settings.upstream_consensus);
         }
 
         repeats

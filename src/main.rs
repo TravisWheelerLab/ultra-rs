@@ -11,10 +11,19 @@ use ultra::mask::output_masked_fasta;
 use ultra::ultra::Ultra;
 use ultra::writers::{fmt_f, fmt_g};
 
+/// Fresh settings, with `upstream_consensus` taken from the environment
+/// variable `ULTRA_UPSTREAM_CONSENSUS` (see the field's documentation).
+fn new_settings() -> Settings {
+    let mut settings = Settings::new();
+    settings.upstream_consensus = std::env::var_os("ULTRA_UPSTREAM_CONSENSUS")
+        .is_some_and(|v| !v.is_empty() && v != "0");
+    settings
+}
+
 /// C++ `main_wrapper`. Returns the process exit status.
 fn main_wrapper(argv: &[String]) -> i32 {
     // Prepare settings
-    let mut settings = Settings::new();
+    let mut settings = new_settings();
     settings.prepare_settings();
     if !settings.parse_input(argv) {
         exit(0);
@@ -52,7 +61,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
         let mut best_coverage_index: i32 = -1;
         let mut best_coverage: f64 = 0.0;
         for arg_string in &param_strings {
-            let mut search_setting = Settings::new();
+            let mut search_setting = new_settings();
             search_setting.prepare_settings();
             search_setting.set_multi_option();
             if !search_setting.parse_multi_input(argv, arg_string) {
@@ -128,7 +137,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
                 param_strings[best]
             );
 
-            settings = Settings::new();
+            settings = new_settings();
             settings.prepare_settings();
             settings.set_multi_option();
             if !settings.parse_multi_input(argv, &param_strings[best]) {
