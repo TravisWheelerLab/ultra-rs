@@ -14,6 +14,8 @@ cd ultra-rs
 cargo build --release
 ```
 Cargo writes the executable to `target/release/ultra`. To install it in Cargo's bin directory instead, run `cargo install --path .`.
+
+ULTRA is also on crates.io as `ultra-repeats`. `cargo install ultra-repeats` downloads, builds and installs the `ultra` command without cloning this repository.
 ## Basic usage
 A list of all flags and options can be seen with `ultra -h`. To annotate tandem repeats with ULTRA use `ultra [options] <path to FASTA file>`.  The following walkthroughs and examples demonstrate common use cases.
   

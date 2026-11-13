@@ -1,13 +1,20 @@
 [package]
-name = "ultra"
+name = "ultra-repeats"
 version = "0.1.0"
 edition = "2021"
-description = "Rust port of ULTRA (ULTRA Locates Tandemly Repetitive Areas)"
+description = "Rust port of ULTRA, a tool for finding and annotating tandem repeats in genomic sequence"
 license = "BSD-3-Clause"
 repository = "https://github.com/TravisWheelerLab/ultra-rs"
+readme = "README.md"
+keywords = ["tandem-repeats", "bioinformatics", "genomics", "repeats", "hmm"]
+categories = [
+    "science::bioinformatics::sequence-analysis",
+    "science::bioinformatics::genomics",
+    "command-line-utilities",
+]
 
 [lib]
-name = "ultra"
+name = "ultra_repeats"
 path = "src/lib.rs"
 
 [[bin]]

@@ -3,8 +3,8 @@
 //! `examples/library_example.cpp`; run with
 //! `cargo run --release --example library_example`.
 
-use ultra::cli::{string_to_args, Settings};
-use ultra::ultra::Ultra;
+use ultra_repeats::cli::{string_to_args, Settings};
+use ultra_repeats::ultra::Ultra;
 
 fn print_repeats(ultra: &mut Ultra, s: &str) {
     println!("Finding repeats in string ``{}''", s);

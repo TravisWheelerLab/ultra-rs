@@ -3,13 +3,13 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 
-use ultra::cli::{
+use ultra_repeats::cli::{
     large_tune_settings, medium_tune_settings, small_tune_settings, tune_settings_for_path,
     Settings,
 };
-use ultra::mask::output_masked_fasta;
-use ultra::ultra::Ultra;
-use ultra::writers::{fmt_f, fmt_g};
+use ultra_repeats::mask::output_masked_fasta;
+use ultra_repeats::ultra::Ultra;
+use ultra_repeats::writers::{fmt_f, fmt_g};
 
 /// Fresh settings, with `upstream_consensus` taken from the environment
 /// variable `ULTRA_UPSTREAM_CONSENSUS` (see the field's documentation).
