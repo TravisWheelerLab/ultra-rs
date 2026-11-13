@@ -10,16 +10,22 @@
 
 use std::io::Write;
 
-pub const ULTRA_VERSION_STRING: &str = "1.2.2";
+/// The version this program reports in `--help` and in JSON output. It is
+/// the version of the crate, set in `Cargo.toml`.
+pub const ULTRA_VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
 
 /// Text CLI11 prints at the top of `--help` (the `CLI::App` description).
-pub const ULTRA_BANNER: &str = "\n\
-=================================================\n\
-(U)ltra (L)ocates (T)andemly (R)epetitive (A)reas\n\
-\x20    Daniel R. Olson and Travis J. Wheeler\n\
-\x20                Version 1.2.2\n\
-\x20    Use '--cite' for citation instructions\n\
-=================================================\n";
+pub const ULTRA_BANNER: &str = concat!(
+    "\n",
+    "=================================================\n",
+    "(U)ltra (L)ocates (T)andemly (R)epetitive (A)reas\n",
+    "     Daniel R. Olson and Travis J. Wheeler\n",
+    "                 Version ",
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    "     Use '--cite' for citation instructions\n",
+    "=================================================\n",
+);
 
 const CITE_TEXT: &str = "BibTeX: \n\
 @article{10.1093/bioadv/vbae149,\n\
@@ -1716,7 +1722,8 @@ mod tests {
                 ULTRA_VERSION_STRING,
                 s.json_string()
             );
-            assert_eq!(&full, expected, "json for {:?}", a);
+            let expected = expected.replace("@VERSION@", ULTRA_VERSION_STRING);
+            assert_eq!(full, expected, "json for {:?}", a);
         }
     }
 
@@ -1860,7 +1867,7 @@ mod tests {
     const JSON_CASES: &[(&[&str], &str)] = &[
         (
             &["./ultra", "ex.fa"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa",
 "in_file": "ex.fa",
@@ -1915,7 +1922,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "-p", "20", "-i", "3", "-d", "4"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -p 20 -i 3 -d 4",
 "in_file": "ex.fa",
@@ -1970,7 +1977,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--at", "0.3"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --at 0.3",
 "in_file": "ex.fa",
@@ -2025,7 +2032,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--acgt", "0.1", "0.2", "0.3", "0.4"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --acgt 0.1 0.2 0.3 0.4",
 "in_file": "ex.fa",
@@ -2080,7 +2087,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--acgt", "0.3", "0.2", "0.2", "0.3", "--at", "0.9"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --acgt 0.3 0.2 0.2 0.3 --at 0.9",
 "in_file": "ex.fa",
@@ -2135,7 +2142,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--win_size", "5000", "--overlap", "50"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --win_size 5000 --overlap 50",
 "in_file": "ex.fa",
@@ -2190,7 +2197,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "-t", "4", "--windows", "100"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -t 4 --windows 100",
 "in_file": "ex.fa",
@@ -2245,7 +2252,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--json", "-o", "out1"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --json -o out1",
 "in_file": "ex.fa",
@@ -2300,7 +2307,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--bed", "--pval", "-o", "out2"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --bed --pval -o out2",
 "in_file": "ex.fa",
@@ -2355,7 +2362,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--tsv", "--json", "--bed", "-o", "out3"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --tsv --json --bed -o out3",
 "in_file": "ex.fa",
@@ -2419,7 +2426,7 @@ mod tests {
                 "--show_wid",
                 "--show_logo",
             ],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --json --show_seq --show_delta --show_trace --show_wid --show_logo",
 "in_file": "ex.fa",
@@ -2474,7 +2481,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--suppress"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --suppress",
 "in_file": "ex.fa",
@@ -2529,7 +2536,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--mask", "m.fa", "--nmask"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --mask m.fa --nmask",
 "in_file": "ex.fa",
@@ -2593,7 +2600,7 @@ mod tests {
                 "--min_unit",
                 "3",
             ],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -s -20.5 --min_length 15 --min_unit 3",
 "in_file": "ex.fa",
@@ -2651,7 +2658,7 @@ mod tests {
                 "./ultra", "ex.fa", "-m", "0.8", "--decay", "0.9", "--nr", "0.02", "--rn", "0.1", "--ri", "0.03",
                 "--rd", "0.04", "--ii", "0.05", "--dd", "0.06",
             ],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -m 0.8 --decay 0.9 --nr 0.02 --rn 0.1 --ri 0.03 --rd 0.04 --ii 0.05 --dd 0.06",
 "in_file": "ex.fa",
@@ -2706,7 +2713,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--no_split"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --no_split",
 "in_file": "ex.fa",
@@ -2772,7 +2779,7 @@ mod tests {
                 "--min_split_window",
                 "20",
             ],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --max_split 5 --split_threshold 2.25 --split_depth 7 --min_split_window 20",
 "in_file": "ex.fa",
@@ -2827,7 +2834,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "-r"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -r",
 "in_file": "ex.fa",
@@ -2882,7 +2889,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--max_consensus", "50"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --max_consensus 50",
 "in_file": "ex.fa",
@@ -2937,7 +2944,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--pval_loc=2.5", "--pval_scale=1.5"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --pval_loc=2.5 --pval_scale=1.5",
 "in_file": "ex.fa",
@@ -2992,7 +2999,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "-p", "5"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -p 5",
 "in_file": "ex.fa",
@@ -3047,7 +3054,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "-p", "12", "-i", "2", "-d", "2"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -p 12 -i 2 -d 2",
 "in_file": "ex.fa",
@@ -3119,7 +3126,7 @@ mod tests {
                 "--minsplitwin",
                 "30",
             ],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --minlen 7 --minunit 4 --winsize 3000 --maxsplit 3 --splitval 1.5 --splitdepth 9 --minsplitwin 30",
 "in_file": "ex.fa",
@@ -3174,7 +3181,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "--at", "0.333333"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa --at 0.333333",
 "in_file": "ex.fa",
@@ -3240,7 +3247,7 @@ mod tests {
                 "--overlap",
                 "33",
             ],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -s 1e2 -t 0x2 --windows 010 --overlap 33",
 "in_file": "ex.fa",
@@ -3295,7 +3302,7 @@ mod tests {
         ),
         (
             &["./ultra", "ex.fa", "-p", "50", "-i", "0", "-d", "0", "--nosplit"],
-            r####"{"Version": "1.2.2", 
+            r####"{"Version": "@VERSION@", 
 "Parameters": {
 "args": "./ultra ex.fa -p 50 -i 0 -d 0 --nosplit",
 "in_file": "ex.fa",

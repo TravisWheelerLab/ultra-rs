@@ -29,6 +29,10 @@
 //! linked in as `in.fa` and `argv[0]` forced to `ultra`, because the settings
 //! block that ULTRA writes into its output echoes the command line.
 //!
+//! The two programs report different versions (the C++ 1.2.2, this crate its
+//! own), in the `--help` banner and on the first line of JSON output. Before
+//! comparing, the tests rewrite the version in the C++ output to this crate's.
+//!
 //! The C++ binary is only deterministic with one thread, so thread-count cases
 //! compare the Rust binary at `-t N` against the reference at `-t 1`, looking
 //! at output files only.
@@ -372,6 +376,28 @@ fn run(bin: &Path, dir: &Path, input_path: &Path, case_args: &[String], with_inp
     }
 }
 
+/// The version the reference binary reports.
+const REFERENCE_VERSION: &str = "1.2.2";
+
+/// Rewrites the version in reference output to this crate's version, in the
+/// two places ULTRA prints it: the `--help` banner and the first line of
+/// JSON output.
+fn with_port_version(bytes: Vec<u8>) -> Vec<u8> {
+    let Ok(text) = String::from_utf8(bytes.clone()) else {
+        return bytes;
+    };
+    let ours = env!("CARGO_PKG_VERSION");
+    text.replace(
+        &format!("                Version {REFERENCE_VERSION}\n"),
+        &format!("                Version {ours}\n"),
+    )
+    .replace(
+        &format!("{{\"Version\": \"{REFERENCE_VERSION}\", "),
+        &format!("{{\"Version\": \"{ours}\", "),
+    )
+    .into_bytes()
+}
+
 /// Blanks every run of digits and dots, and everything after the label of
 /// lines whose value is random.
 fn shape(bytes: &[u8]) -> Vec<u8> {
@@ -448,7 +474,12 @@ fn check(case: &Case, reference: &Path) -> Vec<String> {
     let ref_dir = base.join("cpp");
     let rust_dir = base.join("rust");
 
-    let expected = run(reference, &ref_dir, &input_path, &case.ref_args, case.with_input);
+    let mut expected = run(reference, &ref_dir, &input_path, &case.ref_args, case.with_input);
+    expected.stdout = with_port_version(std::mem::take(&mut expected.stdout));
+    expected.stderr = with_port_version(std::mem::take(&mut expected.stderr));
+    for bytes in expected.files.values_mut() {
+        *bytes = with_port_version(std::mem::take(bytes));
+    }
     let actual = run(&rust_bin(), &rust_dir, &input_path, &case.rust_args, case.with_input);
 
     let mut problems = Vec::new();
