@@ -27,9 +27,10 @@ const INDEL_TEST_MIN_BASES: u64 = 12;
 const INDEL_TEST_FIRST_COPY_WEIGHT: i32 = 4;
 
 /// Scores for aligning a repeat to its consensus, and how many times the
-/// alignment is repeated with the consensus it produced. On the first
-/// simulated set these give 2,798 exact consensi; eight other score settings
-/// gave between 2,791 and 2,798, and a third pass gave no more (`TODO.md`).
+/// alignment is repeated with the consensus it produced. In a simulation of
+/// 5,200 noisy tandem arrays, these settings gave a consensus that was a
+/// rotation of the planted unit in 2,798. Eight other score settings gave
+/// between 2,791 and 2,798, and a third pass gave no more.
 const REALIGN_MATCH: i32 = 2;
 const REALIGN_MISMATCH: i32 = -2;
 const REALIGN_GAP: i32 = -5;
@@ -232,8 +233,9 @@ impl RepeatRegion {
     ///    the consensus as a circle, and counts each base in the column it
     ///    aligns to. It does this [`REALIGN_PASSES`] times.
     ///
-    /// On simulated arrays this gave the planted unit more often than the
-    /// single walk (figures in `TODO.md`).
+    /// In a simulation of 5,200 noisy tandem arrays, this gave a consensus
+    /// that was a rotation of the planted unit in 2,798, against 2,534 for
+    /// the single walk.
     pub fn create_logo(
         &mut self,
         window: &SequenceWindow,
@@ -1787,9 +1789,8 @@ mod tests {
         }
     }
 
-    /// From the first simulated set (`TODO.md`): copies of `CCTAT` with
-    /// substitutions, insertions and deletions at 10% in total, between
-    /// random flanks (cut to 60 bases each).
+    /// A simulated array: copies of `CCTAT` with substitutions, insertions
+    /// and deletions at 10% in total, between random flanks of 60 bases.
     const NOISY_CCTAT: &[&str] = &[
         "CTAGATGTCTAAATCGTTCCTGTCAAGTAACAACCGCGGGCACCACCGTGACGGTCCCAGCCTATCCTATCCTATCCTATCCTATCCTAATCCTATCCTA",
         "TCGATCCTATCCTATCCTTTCCTATCCTATCCCTTTCCCTATCCATCCTATCCTATCCTATCCTATCCTACCTATCCTATCTATCCTCATCCTATCCCTA",

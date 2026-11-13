@@ -2,12 +2,12 @@
 //! binary byte for byte (exit code, stdout, stderr and every output file).
 //!
 //! The reference is the C++ ULTRA at commit 7947d0d, which is 1.2.2 plus the
-//! bug fixes this port also makes (TravisWheelerLab/ULTRA pull request 95;
-//! the fixes are listed in `TODO.md`). The binary is taken from
-//! `$ULTRA_REF_BIN`, or from `upstream/build-fixed/ultra` under the crate
-//! root. When neither exists the tests print a notice and pass, so the suite
-//! still runs on a machine without a C++ build. Pointing `$ULTRA_REF_BIN` at
-//! a build of stock 1.2.2 shows which outputs the fixes change.
+//! bug fixes this port also makes (TravisWheelerLab/ULTRA pull request 95).
+//! The binary is taken from `$ULTRA_REF_BIN`, or from
+//! `upstream/build-fixed/ultra` under the crate root. When neither exists
+//! the tests print a notice and pass, so the suite still runs on a machine
+//! without a C++ build. Pointing `$ULTRA_REF_BIN` at a build of stock 1.2.2
+//! shows which outputs the fixes change.
 //!
 //! To build the reference from the crate root:
 //!
