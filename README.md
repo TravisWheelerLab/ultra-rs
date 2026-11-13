@@ -6,16 +6,37 @@ ULTRA is a tool for finding and annotating tandem repeats within genomic sequenc
 
 This repository is a port of ULTRA to Rust. The original, written in C++, is at [TravisWheelerLab/ULTRA](https://github.com/TravisWheelerLab/ULTRA). The port is based on ULTRA 1.2.2, takes the same command-line options and writes the same output formats. It fixes several bugs in 1.2.2 and builds the consensus of each repeat differently, so its output can differ from that of the C++ version.
 
-## Building
-Building ULTRA requires [Rust and Cargo](https://www.rust-lang.org/tools/install). We built and tested this port with Rust 1.94. To download and build ULTRA run the following commands:
+## Installing
+Installing ULTRA requires [Rust and Cargo](https://www.rust-lang.org/tools/install). We built and tested this port with Rust 1.94.
+
+### From crates.io
+ULTRA is on crates.io as [`ultra-repeats`](https://crates.io/crates/ultra-repeats). To download, build and install it run:
+```
+cargo install ultra-repeats
+```
+The crate is called `ultra-repeats`, but the command it installs is `ultra`. The crate called `ultra` on crates.io is an unrelated project.
+
+To update to a newer release, run the same command again. To remove ULTRA, run `cargo uninstall ultra-repeats`.
+
+### From a clone of this repository
 ```
 git clone https://github.com/TravisWheelerLab/ultra-rs
 cd ultra-rs
-cargo build --release
+cargo install --path .
 ```
-Cargo writes the executable to `target/release/ultra`. To install it in Cargo's bin directory instead, run `cargo install --path .`.
+To build without installing, run `cargo build --release` in place of the last command. Cargo then writes the executable to `target/release/ultra`.
 
-ULTRA is also on crates.io as `ultra-repeats`. `cargo install ultra-repeats` downloads, builds and installs the `ultra` command without cloning this repository.
+To install the current state of this repository without keeping a clone, run `cargo install --git https://github.com/TravisWheelerLab/ultra-rs`.
+
+### Running
+`cargo install` puts the `ultra` command in `~/.cargo/bin`, which the Rust installer adds to your `PATH`. To check the installation run:
+```
+ultra -h
+```
+The banner at the top of the help text gives the version. This port has its own version numbers, which start at 0.1.0 and are separate from those of the C++ ULTRA.
+
+If you built without installing, type `target/release/ultra` wherever the examples below say `ultra`.
+
 ## Basic usage
 A list of all flags and options can be seen with `ultra -h`. To annotate tandem repeats with ULTRA use `ultra [options] <path to FASTA file>`.  The following walkthroughs and examples demonstrate common use cases.
   
