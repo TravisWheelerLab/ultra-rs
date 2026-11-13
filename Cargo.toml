@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Rust port of ULTRA (ULTRA Locates Tandemly Repetitive Areas)"
 license = "BSD-3-Clause"
-repository = "https://github.com/TravisWheelerLab/ULTRA"
+repository = "https://github.com/TravisWheelerLab/ultra-rs"
 
 [lib]
 name = "ultra"

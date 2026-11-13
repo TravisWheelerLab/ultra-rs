@@ -256,7 +256,7 @@ fn input(key: &str) -> PathBuf {
         return path;
     }
 
-    let data = crate_root().join("tests/data");
+    let data = crate_root().join("examples");
     let bytes = match key {
         "ex1" => fs::read(data.join("example_1.fa")).unwrap(),
         "ex2" => fs::read(data.join("example_2.fa")).unwrap(),
@@ -342,7 +342,7 @@ fn run(bin: &Path, dir: &Path, input_path: &Path, case_args: &[String], with_inp
     fs::create_dir_all(dir).unwrap();
     std::os::unix::fs::symlink(input_path, dir.join("in.fa")).unwrap();
     // A parameter file for `--tune_file` cases.
-    fs::copy(crate_root().join("tests/data/tune_file"), dir.join("tune_file")).unwrap();
+    fs::copy(crate_root().join("examples/tune_file"), dir.join("tune_file")).unwrap();
 
     let mut cmd = Command::new(bin);
     cmd.arg0("ultra")
