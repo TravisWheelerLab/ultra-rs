@@ -209,6 +209,9 @@ Users can also specify their own parameter sets to tune ULTRA against by using t
 Here `examples/tune_file` tests different repeat periods (`-p <repeat period>`), different repeat emission probabilities (`-m <repeat emission probability>`),  different background AT frequencies (`--at <AT rate>`), and different indel states (`-i <max insertions> -d <max deletions>`).
 </details>
 
+## ultrafast: a FasTAN + ULTRA hybrid
+`ultrafast/` is a separate tool in this repository. It runs FasTAN to find tandem arrays of any period and ULTRA, in-process, at periods up to 20, then merges the two into ULTRA's JSON format with per-base score deltas. On the release paper's benchmark genomes it covers 85–100% of what `ultra -p 500` finds, at no higher false discovery rate, using about 2–4% of the CPU time. Build it with `cargo build --release -p ultrafast`; see [`ultrafast/README.md`](ultrafast/README.md).
+
 ## Citing
 ```
 @article{10.1093/bioadv/vbae149,

@@ -23,6 +23,15 @@ path = "src/main.rs"
 
 [dependencies]
 
+# ultrafast/ (the FasTAN + ULTRA hybrid) is a separate crate so the ultra library
+# keeps no dependencies. `cargo build --release` here builds ultra only;
+# `cargo build --release -p ultrafast` builds the hybrid.
+[workspace]
+members = [".", "ultrafast"]
+
 [profile.release]
 opt-level = 3
 debug = false
+
+[profile.release.package.ultrafast]
+codegen-units = 1
