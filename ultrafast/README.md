@@ -17,7 +17,7 @@ the same scale (`--delta-model ultra`, bits), so the output works anywhere ULTRA
 ## Building
 From the repository root:
 ```
-cargo build --release -p ultrafast     # target/release/ultrafast
+cargo build --release                  # builds ultra and ultrafast: target/release/ultrafast
 cargo install --path ultrafast         # or install it
 ```
 `ultrafast` is a separate crate in the workspace, so the `ultra` library keeps no dependencies.
@@ -53,7 +53,7 @@ The crate is also a library: the command is a thin wrapper around `ultrafast::hy
 so depend on it through git or a path:
 ```toml
 [dependencies]
-ultrafast = { git = "https://github.com/TravisWheelerLab/ultra-rs", branch = "hybrid" }
+ultrafast = { git = "https://github.com/TravisWheelerLab/ultra-rs", branch = "master" }
 ```
 ```rust
 let opt = ultrafast::HybridOptions { ultra_period: 20, threads: 8, ..Default::default() };

@@ -1,6 +1,6 @@
 [package]
 name = "ultra-repeats"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
 description = "Rust port of ULTRA, a tool for finding and annotating tandem repeats in genomic sequence"
 license = "BSD-3-Clause"
@@ -24,10 +24,14 @@ path = "src/main.rs"
 [dependencies]
 
 # ultrafast/ (the FasTAN + ULTRA hybrid) is a separate crate so the ultra library
-# keeps no dependencies. `cargo build --release` here builds ultra only;
-# `cargo build --release -p ultrafast` builds the hybrid.
+# keeps no dependencies. `cargo build --release` here builds both tools.
 [workspace]
 members = [".", "ultrafast"]
+default-members = [".", "ultrafast"]
+
+# One version for both crates: set it here only.
+[workspace.package]
+version = "0.2.1"
 
 [profile.release]
 opt-level = 3

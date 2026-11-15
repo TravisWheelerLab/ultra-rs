@@ -1,6 +1,6 @@
 [package]
 name = "ultrafast"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Hybrid tandem-repeat annotator: FasTAN for long periods, ULTRA for short ones, ULTRA-format output"
 license = "BSD-3-Clause"

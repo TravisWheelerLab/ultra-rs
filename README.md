@@ -6,8 +6,14 @@ ULTRA is a tool for finding and annotating tandem repeats within genomic sequenc
 
 This repository is a port of ULTRA to Rust. The original, written in C++, is at [TravisWheelerLab/ULTRA](https://github.com/TravisWheelerLab/ULTRA). The port is based on ULTRA 1.2.2, takes the same command-line options and writes the same output formats. It fixes several bugs in 1.2.2 and builds the consensus of each repeat differently, so its output can differ from that of the C++ version.
 
+The repository holds two tools:
+- **`ultra`**, the port of ULTRA described above.
+- **`ultrafast`**, a faster hybrid for whole genomes. It finds tandem arrays of any period with FasTAN and runs ULTRA alongside it for short periods (up to 20 by default), then merges the two into ULTRA's JSON output. See [ultrafast](#ultrafast-a-fastan--ultra-hybrid) below.
+
 ## Installing
 Installing ULTRA requires [Rust and Cargo](https://www.rust-lang.org/tools/install). We built and tested this port with Rust 1.94.
+
+`ultra` is on crates.io; `ultrafast` is installed from this repository (below).
 
 ### From crates.io
 ULTRA is on crates.io as [`ultra-repeats`](https://crates.io/crates/ultra-repeats). To download, build and install it run:
@@ -22,20 +28,26 @@ To update to a newer release, run the same command again. To remove ULTRA, run `
 ```
 git clone https://github.com/TravisWheelerLab/ultra-rs
 cd ultra-rs
-cargo install --path .
+cargo install --path .             # ultra
+cargo install --path ultrafast     # ultrafast
 ```
-To build without installing, run `cargo build --release` in place of the last command. Cargo then writes the executable to `target/release/ultra`.
+To build without installing, run `cargo build --release` in place of the install commands. It builds both tools, and Cargo writes the executables to `target/release/ultra` and `target/release/ultrafast`.
 
-To install the current state of this repository without keeping a clone, run `cargo install --git https://github.com/TravisWheelerLab/ultra-rs`.
+To install the current state of this repository without keeping a clone, name the package to install:
+```
+cargo install --git https://github.com/TravisWheelerLab/ultra-rs ultra-repeats   # ultra
+cargo install --git https://github.com/TravisWheelerLab/ultra-rs ultrafast       # ultrafast
+```
 
 ### Running
 `cargo install` puts the `ultra` command in `~/.cargo/bin`, which the Rust installer adds to your `PATH`. To check the installation run:
 ```
 ultra -h
+ultrafast -h
 ```
-The banner at the top of the help text gives the version. This port has its own version numbers, which start at 0.1.0 and are separate from those of the C++ ULTRA.
+The banner at the top of `ultra -h` gives the version. This port has its own version numbers, which start at 0.1.0 and are separate from those of the C++ ULTRA.
 
-If you built without installing, type `target/release/ultra` wherever the examples below say `ultra`.
+If you built without installing, type `target/release/ultra` (or `target/release/ultrafast`) wherever the examples below say `ultra` (or `ultrafast`).
 
 ## Basic usage
 A list of all flags and options can be seen with `ultra -h`. To annotate tandem repeats with ULTRA use `ultra [options] <path to FASTA file>`.  The following walkthroughs and examples demonstrate common use cases.
@@ -210,7 +222,22 @@ Here `examples/tune_file` tests different repeat periods (`-p <repeat period>`),
 </details>
 
 ## ultrafast: a FasTAN + ULTRA hybrid
-`ultrafast/` is a separate tool in this repository. It runs FasTAN to find tandem arrays of any period and ULTRA, in-process, at periods up to 20, then merges the two into ULTRA's JSON format with per-base score deltas. On the release paper's benchmark genomes it covers 85–100% of what `ultra -p 500` finds, at no higher false discovery rate, using about 2–4% of the CPU time. Build it with `cargo build --release -p ultrafast`; see [`ultrafast/README.md`](ultrafast/README.md).
+`ultrafast` combines two finders:
+- **FasTAN** (a Rust port of Gene Myers' tandem-array finder) finds arrays of any period quickly.
+- **ULTRA** runs in the same process at periods up to 20, where its sensitivity matters most and its cost is lowest.
+
+Where the two overlap, ULTRA's call is kept. FasTAN's arrays get a consensus unit and per-base score deltas on ULTRA's scale. The output is ULTRA's JSON format (`--json --show_delta`), so it can be used wherever that is, e.g. as RepeatMasker Aurora's tandem-repeat input.
+
+Results on the release paper's benchmark genomes:
+- 85–100% of the coverage of `ultra -p 500`
+- a false discovery rate no higher than ULTRA's
+- about 2–4% of ULTRA's CPU time
+
+```
+ultrafast -t 16 -o genome.json genome.fa     # ULTRA at periods <= 20 plus FasTAN
+ultrafast -p 0 genome.fa > fastan_only.json  # FasTAN only
+```
+It is also a Rust library (`ultrafast::hybrid`). [`ultrafast/README.md`](ultrafast/README.md) covers its options, library use and benchmarks.
 
 ## Citing
 ```
