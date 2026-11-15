@@ -321,7 +321,6 @@ impl UModel {
         let tscore = &self.tscore;
         let period_decay = self.period_decay;
         let period_decay_offset = self.period_decay_offset;
-        let tp_match_to_zero = self.tp_match_to_zero;
         let immediate = self.immediate_transition_to_repeat;
 
         let bg = CT_BACKGROUND as usize;
@@ -424,10 +423,15 @@ impl UModel {
 
                         score += tscore[ma][ins];
                         score += tscore[ins][ins] * (d.indel_number - 1) as f32;
-                        // log2(double) * float is double; += narrows.
-                        score = (score as f64
-                            + log2d(1.0 - tp_match_to_zero as f64) * (order as f32) as f64)
-                            as f32;
+                        // Each of the `order` bases after the indel is a
+                        // match, so it pays the match-to-match transition, as
+                        // in a match state. Upstream 1.2.2 charges
+                        // log2(1 - tp_match_to_zero) instead, which is cheaper
+                        // per base, so a period P - 1 (or k * P - 1) path with
+                        // an insertion each copy outscored the true period P
+                        // on long units.
+                        score =
+                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
 
                         for j in 0..order {
                             score += emission_score(seq, mscore, bscore, nuc_index - j, peridocity);
@@ -479,9 +483,10 @@ impl UModel {
 
                         score += tscore[ma][del];
                         score += tscore[del][del] * (indel_num - 1) as f32;
-                        score = (score as f64
-                            + log2d(1.0 - tp_match_to_zero as f64) * (order as f32) as f64)
-                            as f32;
+                        // Match-to-match cost per base; see the insertion
+                        // case of `calculate_current_column`.
+                        score =
+                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
 
                         for j in 0..(order - indel_num) {
                             let place = nuc_index - order + 1 + j;
@@ -516,7 +521,6 @@ impl UModel {
         let tscore = &self.tscore;
         let period_decay = self.period_decay;
         let period_decay_offset = self.period_decay_offset;
-        let tp_match_to_zero = self.tp_match_to_zero;
         let immediate = self.immediate_transition_to_repeat;
 
         let bg = CT_BACKGROUND as usize;
@@ -608,9 +612,10 @@ impl UModel {
 
                         score += tscore[ma][ins];
                         score += tscore[ins][ins] * (d.indel_number - 1) as f32;
-                        score = (score as f64
-                            + log2d(1.0 - tp_match_to_zero as f64) * (order as f32) as f64)
-                            as f32;
+                        // Match-to-match cost per base; see the insertion
+                        // case of `calculate_current_column`.
+                        score =
+                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
 
                         cols.c[row] = score;
                     } else {
@@ -641,9 +646,10 @@ impl UModel {
 
                         score += tscore[ma][del];
                         score += tscore[del][del] * (indel_num - 1) as f32;
-                        score = (score as f64
-                            + log2d(1.0 - tp_match_to_zero as f64) * (order as f32) as f64)
-                            as f32;
+                        // Match-to-match cost per base; see the insertion
+                        // case of `calculate_current_column`.
+                        score =
+                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
 
                         cols.c[row] = score;
                     } else {
@@ -811,7 +817,7 @@ mod tests {
         assert_eq!(m.matrix.cells_per_column, 101);
         let mut w = SequenceWindow::new(mlen as usize, 0);
 
-        assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x91a9ffebafb895bb);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x93e4fb65ae905247);
         assert_eq!(
             (
                 m.matrix.current_column_index,
@@ -819,8 +825,8 @@ mod tests {
             ),
             (141, 140)
         );
-        assert_eq!(m.matrix.score_at(140, 0).to_bits(), 0x41bae9fe);
-        assert_eq!(m.matrix.score_at(140, 7).to_bits(), 0x40de5c84);
+        assert_eq!(m.matrix.score_at(140, 0).to_bits(), 0x41b732bf);
+        assert_eq!(m.matrix.score_at(140, 7).to_bits(), 0x40c9e268);
         let trace = ints(
             "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 \
              5 5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 0 \
@@ -833,21 +839,20 @@ mod tests {
         let mut fwd = vec![-7; m.matrix.length + 2];
         assert!(m.matrix.forward_traceback(&mut fwd, SEQ_A.len() as i32, 0));
         let want_fwd = ints(
-            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 5 \
-             5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 0 0 \
-             0 0 0 0 0 0 82 83 82 82 82 82 82 82 82 82 82 82 82 82 83 82 82 82 82 82 82 82 82 82 \
-             82 82 82 82 82 82 82 82 82 84 82 82 82 82 82 82 82 82 82 82 82 82 82 82 0 0 0 0 -7 \
-             -7 -7 -7",
+            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 \
+             5 5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 \
+             0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 \
+             0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -7 -7 -7 -7",
         );
         assert_eq!(fwd, want_fwd);
 
         // A second, shorter window reuses the matrix.
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x6b22681375298aa3);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x29e911bc00278209);
         assert_eq!(m.matrix.traceback[15], 32);
 
         m.matrix.adjust_score_to_zero(5);
-        assert_eq!(m.matrix.last_score_adjustment.to_bits(), 0xc1bbd913);
-        assert_eq!(m.matrix.total_score_adjustment.to_bits(), 0xc1bbd913);
+        assert_eq!(m.matrix.last_score_adjustment.to_bits(), 0xc1b8de78);
+        assert_eq!(m.matrix.total_score_adjustment.to_bits(), 0xc1b8de78);
     }
 
     #[test]
@@ -863,10 +868,10 @@ mod tests {
         let mlen = SEQ_B.len() as i32 + 3;
         let mut m = ultra_model(5, 2, 1, mlen, true, false);
         let mut w = SequenceWindow::new(mlen as usize, 0);
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x3f3cc269dba4402e);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0xa5b59ec6f3742034);
         assert_eq!(
             run_window(&mut m, &mut w, "ACGNACGACGACG"),
-            0x414aa4cda468176a
+            0x48116a8c4a543ec4
         );
         // Entries past the second window are stale from the first.
         let trace = ints(
@@ -876,6 +881,6 @@ mod tests {
         assert_eq!(m.matrix.traceback, trace);
 
         let mut m = ultra_model(9, 3, 2, mlen, false, true);
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x6ebe7c72c1de7bb5);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x3a614baf77750b0);
     }
 }

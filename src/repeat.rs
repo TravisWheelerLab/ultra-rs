@@ -1702,7 +1702,7 @@ mod tests {
         let (out, written) = run(T1, 2000, 0, 100, 10, 10, true);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (14978, 0x5038ce45a802c8e1)
+            (14978, 0xa5a25eda6c3f751b)
         );
 
         let r = &written[0];
@@ -1734,31 +1734,32 @@ mod tests {
         let (out, written) = run(T2, 500, 150, 10, 3, 3, true);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (18668, 0xde7570a479d0ee6a)
+            (18668, 0xc509e54f33a71c23)
         );
         assert!(written.iter().any(|r| r.combined_repeat));
 
         let (out, written) = run(T2, 300, 120, 6, 6, 6, true);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (17251, 0x7328a59618405f90)
+            (17564, 0x6099f99c80a14076)
         );
-        // The two copies start together and the first is the longer (170
-        // against 107), so the joined region is the first one whole. Upstream
-        // 1.2.2 cuts it to 107 and keeps the split at 123.
+        // The copy from the second window starts first (185) and is the
+        // longer (178, against 107 for the copy at 193), so the other copy
+        // ends inside it and the joined region is the longer one whole.
+        // Upstream 1.2.2 cuts it to 8 + 107 = 115.
         let j = written.iter().find(|r| r.combined_repeat).unwrap();
         assert_eq!(
             (j.sequence_start, j.repeat_length, j.repeat_period),
-            (193, 170, 6)
+            (185, 178, 6)
         );
-        assert_eq!(j.region_score.to_bits(), 0x42195a43);
+        assert_eq!(j.region_score.to_bits(), 0x41ff22b3);
         assert_eq!((j.start_score, j.end_score, j.mismatches), (0.0, 0.0, 0));
         assert_eq!(j.overlap_correction, 1);
-        assert_eq!(j.splits, Some(vec![44, 123]));
+        assert_eq!(j.splits, Some(vec![51, 131]));
         assert!(j.logo.is_none() && j.consensus.is_none());
-        assert_eq!(j.scores.as_ref().unwrap().len(), 170);
-        assert_eq!(j.logo_numbers.as_ref().unwrap().len(), 170);
-        assert_eq!(j.sequence.len(), 170);
+        assert_eq!(j.scores.as_ref().unwrap().len(), 178);
+        assert_eq!(j.logo_numbers.as_ref().unwrap().len(), 178);
+        assert_eq!(j.sequence.len(), 178);
     }
 
     /// Twenty-four copies of `ACGGTCATTG` between random flanks, with one
@@ -1978,7 +1979,7 @@ mod tests {
         let (out, written) = run(T2, 500, 150, 10, 3, 3, false);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (18568, 0x3652a6ae83f8fc78)
+            (18568, 0x9c11459f2b7ba157)
         );
         assert!(written
             .iter()
