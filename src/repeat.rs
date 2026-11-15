@@ -1569,11 +1569,11 @@ mod tests {
         del: i32,
         split: bool,
     ) -> (String, Vec<Box<RepeatRegion>>) {
-        run_with(seq, ws, ov, per, ins, del, split, true)
+        run_model(seq, ws, ov, per, ins, del, split, true, true)
     }
 
-    /// `run` with the choice of consensus: `upstream` as in the C++ dumps
-    /// the hashes below were taken from, or the default of the crate.
+    /// The crate's default model with the choice of consensus: `upstream`
+    /// for the single walk of the C++, or the default of the crate.
     #[allow(clippy::too_many_arguments)]
     fn run_with(
         seq: &[&str],
@@ -1583,6 +1583,23 @@ mod tests {
         ins: i32,
         del: i32,
         split: bool,
+        upstream: bool,
+    ) -> (String, Vec<Box<RepeatRegion>>) {
+        run_model(seq, ws, ov, per, ins, del, split, false, upstream)
+    }
+
+    /// `upstream_model` and `upstream` both true give the C++ behaviour the
+    /// hashes below were taken from.
+    #[allow(clippy::too_many_arguments)]
+    fn run_model(
+        seq: &[&str],
+        ws: usize,
+        ov: usize,
+        per: i32,
+        ins: i32,
+        del: i32,
+        split: bool,
+        upstream_model: bool,
         upstream: bool,
     ) -> (String, Vec<Box<RepeatRegion>>) {
         let s: Vec<u8> = seq.concat().into_bytes();
@@ -1602,6 +1619,7 @@ mod tests {
         model.tp_match_to_deletion = 0.02;
         model.tp_consecutive_insertion = 0.02;
         model.tp_consecutive_deletion = 0.02;
+        model.upstream_indel_windows = upstream_model;
         model.calculate_scores();
 
         let mut splitter = SplitWindow::new();
@@ -1702,7 +1720,7 @@ mod tests {
         let (out, written) = run(T1, 2000, 0, 100, 10, 10, true);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (14978, 0xa5a25eda6c3f751b)
+            (14978, 0x5038ce45a802c8e1)
         );
 
         let r = &written[0];
@@ -1734,32 +1752,31 @@ mod tests {
         let (out, written) = run(T2, 500, 150, 10, 3, 3, true);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (18668, 0xc509e54f33a71c23)
+            (18668, 0xde7570a479d0ee6a)
         );
         assert!(written.iter().any(|r| r.combined_repeat));
 
         let (out, written) = run(T2, 300, 120, 6, 6, 6, true);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (17564, 0x6099f99c80a14076)
+            (17251, 0x7328a59618405f90)
         );
-        // The copy from the second window starts first (185) and is the
-        // longer (178, against 107 for the copy at 193), so the other copy
-        // ends inside it and the joined region is the longer one whole.
-        // Upstream 1.2.2 cuts it to 8 + 107 = 115.
+        // The two copies start together and the first is the longer (170
+        // against 107), so the joined region is the first one whole. Upstream
+        // 1.2.2 cuts it to 107 and keeps the split at 123.
         let j = written.iter().find(|r| r.combined_repeat).unwrap();
         assert_eq!(
             (j.sequence_start, j.repeat_length, j.repeat_period),
-            (185, 178, 6)
+            (193, 170, 6)
         );
-        assert_eq!(j.region_score.to_bits(), 0x41ff22b3);
+        assert_eq!(j.region_score.to_bits(), 0x42195a43);
         assert_eq!((j.start_score, j.end_score, j.mismatches), (0.0, 0.0, 0));
         assert_eq!(j.overlap_correction, 1);
-        assert_eq!(j.splits, Some(vec![51, 131]));
+        assert_eq!(j.splits, Some(vec![44, 123]));
         assert!(j.logo.is_none() && j.consensus.is_none());
-        assert_eq!(j.scores.as_ref().unwrap().len(), 178);
-        assert_eq!(j.logo_numbers.as_ref().unwrap().len(), 178);
-        assert_eq!(j.sequence.len(), 178);
+        assert_eq!(j.scores.as_ref().unwrap().len(), 170);
+        assert_eq!(j.logo_numbers.as_ref().unwrap().len(), 170);
+        assert_eq!(j.sequence.len(), 170);
     }
 
     /// Twenty-four copies of `ACGGTCATTG` between random flanks, with one
@@ -1979,7 +1996,7 @@ mod tests {
         let (out, written) = run(T2, 500, 150, 10, 3, 3, false);
         assert_eq!(
             (out.len(), fnv1a(out.as_bytes())),
-            (18568, 0x9c11459f2b7ba157)
+            (18568, 0x3652a6ae83f8fc78)
         );
         assert!(written
             .iter()

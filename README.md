@@ -59,8 +59,8 @@ Running this command will result in two files, `examples/example_1_ultra.tsv` (c
 ```
 SeqID Start End Period  Score Consensus #Subrepeats SubrepeatStarts SubrepeatConsensi
 Rand_seq_1  447 592 2 175.659958  AT  2 0,81  AT,CG
-Rand_seq_1  859 920 4 49.729370 AGGC  1 0 AGGC
-Rand_seq_1  1104  1167  3 71.850250 AGT 1 0 AGT
+Rand_seq_1  859 920 4 49.481125 AGGC  1 0 AGGC
+Rand_seq_1  1104  1167  3 71.850235 AGT 1 0 AGT
 
 ```
 Columns 1-6 (`SeqID`, `Start`, `End`, `Period`, `Score`, and `Consensus`) describe the overall repetitive region. Columns 7-9 (`#Subrepeats`, `SubrepeatStarts`, and `SubrepeatConsensi`) describe changes in repetitive pattern. Running ULTRA with the `--show_seq` flag will result in an additional column, `Sequence`, that contains the complete repetitive sequence.

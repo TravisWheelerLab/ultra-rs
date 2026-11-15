@@ -11,11 +11,11 @@ use ultra_repeats::mask::output_masked_fasta;
 use ultra_repeats::ultra::Ultra;
 use ultra_repeats::writers::{fmt_f, fmt_g};
 
-/// Fresh settings, with `upstream_consensus` taken from the environment
-/// variable `ULTRA_UPSTREAM_CONSENSUS` (see the field's documentation).
+/// Fresh settings, with `upstream_compat` taken from the environment
+/// variable `ULTRA_UPSTREAM_COMPAT` (see the field's documentation).
 fn new_settings() -> Settings {
     let mut settings = Settings::new();
-    settings.upstream_consensus = std::env::var_os("ULTRA_UPSTREAM_CONSENSUS")
+    settings.upstream_compat = std::env::var_os("ULTRA_UPSTREAM_COMPAT")
         .is_some_and(|v| !v.is_empty() && v != "0");
     settings
 }

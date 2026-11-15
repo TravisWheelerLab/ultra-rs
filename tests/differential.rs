@@ -18,12 +18,14 @@
 //! cmake --build upstream/build-fixed
 //! ```
 //!
-//! The Rust binary builds its consensus differently by default (indel test
-//! and realignment, see `RepeatRegion::create_logo`), so every run here sets
-//! `ULTRA_UPSTREAM_CONSENSUS=1`, which makes it build the consensus as the
-//! C++ does. The C++ binary does not read that variable. The unit tests in
-//! `src/repeat.rs` test the default consensus, and `tests/determinism.rs`
-//! checks that it is the same at every thread count.
+//! By default the Rust binary departs from the C++ in two ways: the model
+//! charges the bases after an indel as matches (`UModel::indel_window_cost`),
+//! and the consensus comes from an indel test and realignment
+//! (`RepeatRegion::create_logo`). Every run here sets
+//! `ULTRA_UPSTREAM_COMPAT=1`, which turns both off. The C++ binary does not
+//! read that variable. The unit tests in `src/umodel.rs` and `src/repeat.rs`,
+//! `tests/long_period.rs` and `tests/determinism.rs` test the default
+//! behaviour.
 //!
 //! Each case runs both binaries in their own scratch directory with the input
 //! linked in as `in.fa` and `argv[0]` forced to `ultra`, because the settings
@@ -351,7 +353,7 @@ fn run(bin: &Path, dir: &Path, input_path: &Path, case_args: &[String], with_inp
     let mut cmd = Command::new(bin);
     cmd.arg0("ultra")
         .current_dir(dir)
-        .env("ULTRA_UPSTREAM_CONSENSUS", "1");
+        .env("ULTRA_UPSTREAM_COMPAT", "1");
     if with_input {
         cmd.arg("in.fa");
     }

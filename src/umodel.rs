@@ -145,6 +145,14 @@ pub struct UModel {
 
     pub immediate_transition_to_repeat: bool,
     pub adjust_match_mismatch_matrix: bool,
+
+    /// Charge each of the `order` bases that follow an indel
+    /// `log2(1 - tp_match_to_zero)`, as the C++ does, instead of the
+    /// match-to-match cost. That is cheaper per base than a match state, so
+    /// on a perfect array of a long unit of length P, a path at period P - 1
+    /// (or k * P - 1) with an insertion each copy outscores the true period.
+    /// False by default; `Settings::upstream_compat` turns it on.
+    pub upstream_indel_windows: bool,
 }
 
 impl UModel {
@@ -186,6 +194,7 @@ impl UModel {
             tscore: [[0.0; 4]; 4],
             immediate_transition_to_repeat: false,
             adjust_match_mismatch_matrix: true,
+            upstream_indel_windows: false,
         };
         m.calculate_scores();
         m
@@ -306,6 +315,18 @@ impl UModel {
         emission_score(seq.seq(), &self.mscore, &self.bscore, index, order)
     }
 
+    /// Transition cost, in bits, of each of the `order` bases that follow an
+    /// indel. Each is a match, so it pays the match-to-match transition as a
+    /// base in a match state does. With `upstream_indel_windows` it pays
+    /// `log2(1 - tp_match_to_zero)` instead, as in the C++.
+    fn indel_window_cost(&self) -> f64 {
+        if self.upstream_indel_windows {
+            log2d(1.0 - self.tp_match_to_zero as f64)
+        } else {
+            self.tscore[CT_MATCH as usize][CT_MATCH as usize] as f64
+        }
+    }
+
     /// Fills the current column for symbol `nuc_index` of `sequence` from
     /// the previous column, then moves the matrix forward one column.
     /// `can_be_repetitive` is accepted and ignored, as upstream.
@@ -322,6 +343,7 @@ impl UModel {
         let period_decay = self.period_decay;
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
+        let window_cost = self.indel_window_cost();
 
         let bg = CT_BACKGROUND as usize;
         let ma = CT_MATCH as usize;
@@ -423,15 +445,9 @@ impl UModel {
 
                         score += tscore[ma][ins];
                         score += tscore[ins][ins] * (d.indel_number - 1) as f32;
-                        // Each of the `order` bases after the indel is a
-                        // match, so it pays the match-to-match transition, as
-                        // in a match state. Upstream 1.2.2 charges
-                        // log2(1 - tp_match_to_zero) instead, which is cheaper
-                        // per base, so a period P - 1 (or k * P - 1) path with
-                        // an insertion each copy outscored the true period P
-                        // on long units.
-                        score =
-                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
+                        // The `order` bases after the indel; see
+                        // `indel_window_cost`.
+                        score = (score as f64 + window_cost * (order as f32) as f64) as f32;
 
                         for j in 0..order {
                             score += emission_score(seq, mscore, bscore, nuc_index - j, peridocity);
@@ -483,10 +499,9 @@ impl UModel {
 
                         score += tscore[ma][del];
                         score += tscore[del][del] * (indel_num - 1) as f32;
-                        // Match-to-match cost per base; see the insertion
-                        // case of `calculate_current_column`.
-                        score =
-                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
+                        // The `order` bases after the indel; see
+                        // `indel_window_cost`.
+                        score = (score as f64 + window_cost * (order as f32) as f64) as f32;
 
                         for j in 0..(order - indel_num) {
                             let place = nuc_index - order + 1 + j;
@@ -522,6 +537,7 @@ impl UModel {
         let period_decay = self.period_decay;
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
+        let window_cost = self.indel_window_cost();
 
         let bg = CT_BACKGROUND as usize;
         let ma = CT_MATCH as usize;
@@ -612,10 +628,9 @@ impl UModel {
 
                         score += tscore[ma][ins];
                         score += tscore[ins][ins] * (d.indel_number - 1) as f32;
-                        // Match-to-match cost per base; see the insertion
-                        // case of `calculate_current_column`.
-                        score =
-                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
+                        // The `order` bases after the indel; see
+                        // `indel_window_cost`.
+                        score = (score as f64 + window_cost * (order as f32) as f64) as f32;
 
                         cols.c[row] = score;
                     } else {
@@ -646,10 +661,9 @@ impl UModel {
 
                         score += tscore[ma][del];
                         score += tscore[del][del] * (indel_num - 1) as f32;
-                        // Match-to-match cost per base; see the insertion
-                        // case of `calculate_current_column`.
-                        score =
-                            (score as f64 + tscore[ma][ma] as f64 * (order as f32) as f64) as f32;
+                        // The `order` bases after the indel; see
+                        // `indel_window_cost`.
+                        score = (score as f64 + window_cost * (order as f32) as f64) as f32;
 
                         cols.c[row] = score;
                     } else {
@@ -689,6 +703,7 @@ mod tests {
     }
 
     /// Model configured as `Ultra`'s constructor does with default settings.
+    /// The model of the C++ dumps the values below were taken from.
     fn ultra_model(
         mp: i32,
         ins: i32,
@@ -697,7 +712,20 @@ mod tests {
         adjmax: bool,
         immediate: bool,
     ) -> UModel {
+        ultra_model_with(mp, ins, del, mlen, adjmax, immediate, true)
+    }
+
+    fn ultra_model_with(
+        mp: i32,
+        ins: i32,
+        del: i32,
+        mlen: i32,
+        adjmax: bool,
+        immediate: bool,
+        upstream_indel_windows: bool,
+    ) -> UModel {
         let mut m = UModel::new(mp, ins, del, mlen);
+        m.upstream_indel_windows = upstream_indel_windows;
         m.period_decay = 0.85;
         m.set_match_probabilities(0.7);
         m.set_atcg_probabilities(0.25, 0.25, 0.25, 0.25);
@@ -810,6 +838,31 @@ mod tests {
         );
     }
 
+    /// The input of `columns_and_tracebacks_match_cpp` under the default
+    /// model, which charges the bases after an indel as matches. The C++
+    /// model puts a repeat in columns 88 to 135 (rows 82 to 84 of `want_fwd`
+    /// in that test); the default model leaves them background.
+    #[test]
+    fn default_model_charges_indel_window_bases_as_matches() {
+        let mlen = SEQ_A.len() as i32 + 3;
+        let mut m = ultra_model_with(11, 10, 10, mlen, false, false, false);
+        let mut w = SequenceWindow::new(mlen as usize, 0);
+
+        assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x93e4fb65ae905247);
+        assert_eq!(m.matrix.score_at(140, 0).to_bits(), 0x41b732bf);
+        assert_eq!(m.matrix.score_at(140, 7).to_bits(), 0x40c9e268);
+
+        let mut fwd = vec![-7; m.matrix.length + 2];
+        assert!(m.matrix.forward_traceback(&mut fwd, SEQ_A.len() as i32, 0));
+        assert!(
+            fwd[72..136].iter().all(|&row| row == 0),
+            "{:?}",
+            &fwd[72..136]
+        );
+
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x29e911bc00278209);
+    }
+
     #[test]
     fn columns_and_tracebacks_match_cpp() {
         let mlen = SEQ_A.len() as i32 + 3;
@@ -817,7 +870,7 @@ mod tests {
         assert_eq!(m.matrix.cells_per_column, 101);
         let mut w = SequenceWindow::new(mlen as usize, 0);
 
-        assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x93e4fb65ae905247);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x91a9ffebafb895bb);
         assert_eq!(
             (
                 m.matrix.current_column_index,
@@ -825,8 +878,8 @@ mod tests {
             ),
             (141, 140)
         );
-        assert_eq!(m.matrix.score_at(140, 0).to_bits(), 0x41b732bf);
-        assert_eq!(m.matrix.score_at(140, 7).to_bits(), 0x40c9e268);
+        assert_eq!(m.matrix.score_at(140, 0).to_bits(), 0x41bae9fe);
+        assert_eq!(m.matrix.score_at(140, 7).to_bits(), 0x40de5c84);
         let trace = ints(
             "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 \
              5 5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 0 \
@@ -839,20 +892,21 @@ mod tests {
         let mut fwd = vec![-7; m.matrix.length + 2];
         assert!(m.matrix.forward_traceback(&mut fwd, SEQ_A.len() as i32, 0));
         let want_fwd = ints(
-            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 \
-             5 5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 \
-             0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 \
-             0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -7 -7 -7 -7",
+            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 5 \
+             5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 0 0 \
+             0 0 0 0 0 0 82 83 82 82 82 82 82 82 82 82 82 82 82 82 83 82 82 82 82 82 82 82 82 82 \
+             82 82 82 82 82 82 82 82 82 84 82 82 82 82 82 82 82 82 82 82 82 82 82 82 0 0 0 0 -7 \
+             -7 -7 -7",
         );
         assert_eq!(fwd, want_fwd);
 
         // A second, shorter window reuses the matrix.
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x29e911bc00278209);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x6b22681375298aa3);
         assert_eq!(m.matrix.traceback[15], 32);
 
         m.matrix.adjust_score_to_zero(5);
-        assert_eq!(m.matrix.last_score_adjustment.to_bits(), 0xc1b8de78);
-        assert_eq!(m.matrix.total_score_adjustment.to_bits(), 0xc1b8de78);
+        assert_eq!(m.matrix.last_score_adjustment.to_bits(), 0xc1bbd913);
+        assert_eq!(m.matrix.total_score_adjustment.to_bits(), 0xc1bbd913);
     }
 
     #[test]
@@ -868,10 +922,10 @@ mod tests {
         let mlen = SEQ_B.len() as i32 + 3;
         let mut m = ultra_model(5, 2, 1, mlen, true, false);
         let mut w = SequenceWindow::new(mlen as usize, 0);
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0xa5b59ec6f3742034);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x3f3cc269dba4402e);
         assert_eq!(
             run_window(&mut m, &mut w, "ACGNACGACGACG"),
-            0x48116a8c4a543ec4
+            0x414aa4cda468176a
         );
         // Entries past the second window are stale from the first.
         let trace = ints(
@@ -881,6 +935,6 @@ mod tests {
         assert_eq!(m.matrix.traceback, trace);
 
         let mut m = ultra_model(9, 3, 2, mlen, false, true);
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x3a614baf77750b0);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x6ebe7c72c1de7bb5);
     }
 }

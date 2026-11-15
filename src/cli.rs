@@ -231,14 +231,16 @@ pub struct Settings {
     /// Stands in for the parser state the C++ struct keeps inside `CLI::App`.
     pub multi_option: bool,
 
-    /// Build each consensus as the C++ does (ULTRA 1.2.2 with the fixes of
-    /// pull request 95) instead of with the indel test and realignment of
-    /// `RepeatRegion::create_logo`. No command-line option sets this. The
-    /// `ultra` binary turns it on when the environment variable
-    /// `ULTRA_UPSTREAM_CONSENSUS` is set to anything but `0` or the empty
-    /// string, which is how the differential tests compare the rest of the
-    /// output with the C++ byte for byte.
-    pub upstream_consensus: bool,
+    /// Score and report repeats as the C++ does (ULTRA 1.2.2 with the fixes
+    /// of pull request 95). This changes two things: the model charges the
+    /// bases after an indel as the C++ does (`UModel::upstream_indel_windows`),
+    /// and each consensus comes from the single walk of the C++ instead of
+    /// the indel test and realignment of `RepeatRegion::create_logo`. No
+    /// command-line option sets this. The `ultra` binary turns it on when the
+    /// environment variable `ULTRA_UPSTREAM_COMPAT` is set to anything but
+    /// `0` or the empty string, which is how the differential tests compare
+    /// the output with the C++ byte for byte.
+    pub upstream_compat: bool,
 }
 
 impl Default for Settings {
@@ -313,7 +315,7 @@ impl Default for Settings {
             max_highfi_naming: 20,
             run_without_reader: false,
             multi_option: false,
-            upstream_consensus: false,
+            upstream_compat: false,
         }
     }
 }
