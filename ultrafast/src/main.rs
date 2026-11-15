@@ -5,10 +5,15 @@ use std::io::Write;
 /// ultrafast: hybrid tandem-repeat annotation with FasTAN and ULTRA.
 ///
 /// FasTAN finds tandem arrays of any period; ULTRA runs in-process alongside it
-/// at a short maximum period (-p, default 20). Where the two overlap, the ULTRA
-/// call is kept and FasTAN calls covered more than half by ULTRA calls are
-/// dropped. The result is written as ULTRA's JSON (the fields of `ultra --json
-/// --show_delta`, Start 0-based), e.g. for RepeatMasker's Aurora (-U).
+/// at a short maximum period (-p, default 20). The result is written as ULTRA's
+/// JSON (the fields of `ultra --json --show_delta`, Start 0-based), e.g. for
+/// RepeatMasker's Aurora (-U). SequenceName is the first word of the header.
+///
+/// Merging: a FasTAN call with a period up to -p is dropped when ULTRA calls cover
+/// more than half of it. A FasTAN call with a longer period, which ULTRA cannot
+/// report, is kept when it scores better under ULTRA's model than the ULTRA calls on
+/// the same bases, and then ULTRA calls it covers more than half of are dropped.
+/// Calls may still overlap in part. --prefer-fastan keeps every FasTAN call instead.
 ///
 /// ULTRA calls keep ULTRA's own units, scores and per-base deltas. FasTAN calls
 /// get a TRF-style iterative consensus unit, are split where the unit changes
@@ -24,9 +29,10 @@ struct Args {
     #[arg(short = 'o', long, value_name = "FILE")]
     out: Option<String>,
     /// ULTRA's maximum period; 0 = don't run ULTRA (FasTAN only)
-    #[arg(short = 'p', long, value_name = "PERIOD", default_value_t = 20)]
+    #[arg(short = 'p', long, value_name = "PERIOD", default_value_t = 20, conflicts_with = "filler")]
     ultra_period: usize,
-    /// Threads (0 = all cores)
+    /// Threads in total (0 = all cores), split between ULTRA and FasTAN, which run at
+    /// the same time; with 1 they run one after the other
     #[arg(short = 't', long, default_value_t = 0)]
     threads: usize,
     /// Also write FasTAN's arrays as TSV (0-based half-open:
@@ -35,7 +41,8 @@ struct Args {
     tsv: Option<String>,
 
     /// Maximum consensus refinement rounds
-    #[arg(long, default_value_t = 6, help_heading = "Consensus")]
+    #[arg(long, default_value_t = 6, help_heading = "Consensus",
+          value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
     rounds: usize,
     /// Skip consensus for periods above this (the array keeps its middle copy)
     #[arg(long, default_value_t = 10_000, help_heading = "Consensus")]
@@ -44,10 +51,12 @@ struct Args {
     #[arg(long, help_heading = "Consensus")]
     no_split: bool,
     /// Minimum edits a split must save
-    #[arg(long, default_value_t = ultrafast::SplitParams::default().min_gain, help_heading = "Consensus")]
+    #[arg(long, default_value_t = ultrafast::SplitParams::default().min_gain, help_heading = "Consensus",
+          conflicts_with = "no_split")]
     split_min_gain: f64,
     /// ... and at least this fraction of the edits the two parts have against the parent unit
-    #[arg(long, default_value_t = ultrafast::SplitParams::default().min_gain_frac, help_heading = "Consensus")]
+    #[arg(long, default_value_t = ultrafast::SplitParams::default().min_gain_frac, help_heading = "Consensus",
+          conflicts_with = "no_split")]
     split_min_frac: f64,
 
     /// Score-delta model for FasTAN calls (ultra: the scale of ULTRA's own deltas)
@@ -60,12 +69,13 @@ struct Args {
     /// array's divergence and its sequence's GC)
     #[arg(long, help_heading = "Score deltas")]
     matrix: Option<String>,
-    /// GC percent for matrix choice (default: per sequence)
+    /// GC percent for matrix choice, 0-100 (default: per sequence)
     #[arg(long, help_heading = "Score deltas")]
     gc: Option<f64>,
-    /// Window for local base composition (delta model te; Aurora's default)
-    #[arg(long, default_value_t = 61, help_heading = "Score deltas")]
-    background_window: usize,
+    /// Window for local base composition, bp (default 61, Aurora's)
+    #[arg(long, help_heading = "Score deltas",
+          value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    background_window: Option<usize>,
     /// Multiply every delta (and Score) by this: tunes how strongly tandem repeats
     /// compete with TE alignments in Aurora
     #[arg(long, default_value_t = 1.0, help_heading = "Score deltas")]
@@ -104,6 +114,23 @@ enum Model {
 
 fn main() -> Result<()> {
     let a = Args::parse();
+    if matches!(a.delta_model, Model::Ultra) {
+        for (set, name) in [
+            (a.matrices.is_some(), "--matrices"),
+            (a.matrix.is_some(), "--matrix"),
+            (a.gc.is_some(), "--gc"),
+            (a.background_window.is_some(), "--background-window"),
+        ] {
+            if set {
+                anyhow::bail!("{name} applies only to --delta-model te");
+            }
+        }
+    }
+    if let Some(g) = a.gc {
+        if !(0.0..=100.0).contains(&g) {
+            anyhow::bail!("--gc must be a percentage from 0 to 100, not {g}");
+        }
+    }
     let delta_model = match a.delta_model {
         Model::Ultra => ultrafast::DeltaModel::Ultra,
         Model::Te => ultrafast::DeltaModel::Te {
@@ -112,7 +139,7 @@ fn main() -> Result<()> {
             )?,
             fixed: a.matrix.clone(),
             gc: a.gc,
-            window: a.background_window,
+            window: a.background_window.unwrap_or(61),
         },
     };
     let opt = ultrafast::HybridOptions {
@@ -136,11 +163,17 @@ fn main() -> Result<()> {
         rescore_only: a.rescore_only,
         delta_model,
         delta_scale: a.delta_scale,
-        ultra_tmp: a.out.as_deref().filter(|o| *o != "-").map(|o| format!("{o}.ultra.partial").into()),
+        // as for ultra: anything but empty or 0 selects the C++-compatible scoring
+        ultra_upstream_compat: std::env::var_os("ULTRA_UPSTREAM_COMPAT").is_some_and(|v| !v.is_empty() && v != "0"),
     };
     let h = ultrafast::hybrid(&a.input, &opt)?;
+    if h.n_unmatched > 0 {
+        eprintln!("ultrafast: warning: {} --filler calls name sequences not in {}; they were dropped", h.n_unmatched, a.input);
+    }
     match a.out.as_deref() {
-        Some(path) if path != "-" => {
+        // a regular file is written in full and then renamed into place; anything
+        // else (e.g. /dev/null, a pipe) is written directly
+        Some(path) if path != "-" && std::fs::metadata(path).map_or(true, |m| m.is_file()) => {
             let tmp = format!("{path}.partial");
             {
                 let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
@@ -148,6 +181,11 @@ fn main() -> Result<()> {
                 w.flush()?;
             }
             std::fs::rename(&tmp, path)?;
+        }
+        Some(path) if path != "-" => {
+            let mut w = std::io::BufWriter::new(std::fs::OpenOptions::new().write(true).open(path)?);
+            h.write_json(&mut w)?;
+            w.flush()?;
         }
         _ => {
             let mut w = std::io::BufWriter::new(std::io::stdout().lock());

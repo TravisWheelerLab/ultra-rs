@@ -1024,8 +1024,9 @@ pub fn tandem_arrays(text: &[u8], starts: &[usize]) -> Vec<TandemArray> {
     // Long contigs (e.g. gap-free T2T chromosomes) are scanned as overlapping windows so they use
     // all threads; calls cut by a window edge are merged afterwards (merge_windows).
     // tasks: (seq, start, end, window id); window ids are unique across the whole input
-    // FASTANRS_WINDOW overrides the window length (0 = scan each contig whole, as C FasTAN does)
-    let window = std::env::var("FASTANRS_WINDOW").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(WINDOW);
+    // ULTRAFAST_WINDOW overrides the window length (0 = scan each contig whole, as C FasTAN
+    // does); for testing
+    let window = std::env::var("ULTRAFAST_WINDOW").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(WINDOW);
     let mut tasks: Vec<(usize, usize, usize, usize)> = Vec::new();
     for &(k, s, e) in &contigs {
         if window == 0 || e - s <= window + WINDOW_OVERLAP {
@@ -1169,6 +1170,40 @@ mod tests {
         t.extend(rand_seq(30_000, 4));
         let arr = tandem_arrays(&t, &[0]);
         assert!(arr.iter().any(|a| (3_900..=4_100).contains(&a.period) && a.aend - a.bbeg >= 12_000), "{arr:?}");
+    }
+
+    fn ta(seq: usize, b: usize, e: usize, period: usize) -> TandemArray {
+        TandemArray { seq, bbeg: b, aend: e, abeg: b + period, bend: e - period, period, diffs: (e - b) / 20 }
+    }
+
+    #[test]
+    fn merge_windows_joins_pieces_from_different_windows() {
+        // one array cut at a window edge: pieces from windows 0 and 1 that overlap
+        let v = merge_windows(vec![(ta(0, 1_990_000, 2_100_000, 171), 0), (ta(0, 2_000_000, 2_171_000, 172), 1)]);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!((v[0].bbeg, v[0].aend), (1_990_000, 2_171_000));
+        assert_eq!(v[0].period, 172, "the longer piece's period (171 kb vs 110 kb)");
+        assert_eq!(v[0].diffs, (181_000.0f64 * (5_500.0 + 8_550.0) / 281_000.0).round() as usize);
+    }
+
+    #[test]
+    fn merge_windows_keeps_what_should_stay_apart() {
+        // same window (nested arrays), periods more than 25% apart, touching only,
+        // and different sequences
+        let same_window = merge_windows(vec![(ta(0, 100, 5_000, 171), 0), (ta(0, 1_000, 2_000, 171), 0)]);
+        assert_eq!(same_window.len(), 2);
+        let periods = merge_windows(vec![(ta(0, 100, 5_000, 100), 0), (ta(0, 1_000, 6_000, 130), 1)]);
+        assert_eq!(periods.len(), 2);
+        let touching = merge_windows(vec![(ta(0, 100, 5_000, 100), 0), (ta(0, 5_000, 9_000, 100), 1)]);
+        assert_eq!(touching.len(), 2);
+        let seqs = merge_windows(vec![(ta(0, 100, 5_000, 100), 0), (ta(1, 1_000, 6_000, 100), 1)]);
+        assert_eq!(seqs.len(), 2);
+        // a call 64+ entries back is out of reach (the look-back bound)
+        let mut v = vec![(ta(0, 0, 1_000_000, 50), 0)];
+        v.extend((0..70).map(|i| (ta(0, 10_000 + i * 1_000, 10_500 + i * 1_000, 7), 0)));
+        v.push((ta(0, 900_000, 1_100_000, 50), 1));
+        let out = merge_windows(v);
+        assert_eq!(out.len(), 72, "the long call and its far piece stay separate past 64 entries");
     }
 
     #[test]

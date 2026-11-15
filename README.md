@@ -226,12 +226,12 @@ Here `examples/tune_file` tests different repeat periods (`-p <repeat period>`),
 - **FasTAN** (a Rust port of Gene Myers' tandem-array finder) finds arrays of any period quickly.
 - **ULTRA** runs in the same process at periods up to 20, where its sensitivity matters most and its cost is lowest.
 
-Where the two overlap, ULTRA's call is kept. FasTAN's arrays get a consensus unit and per-base score deltas on ULTRA's scale. The output is ULTRA's JSON format (`--json --show_delta`), so it can be used wherever that is, e.g. as RepeatMasker Aurora's tandem-repeat input.
+Where they overlap, a FasTAN call with a period up to ULTRA's limit gives way to ULTRA's calls; a longer-period FasTAN call is kept when it scores better under ULTRA's model than the ULTRA calls on the same bases. FasTAN's arrays get a consensus unit and per-base score deltas on ULTRA's scale. The output is ULTRA's JSON format (`--json --show_delta`), so it can be used wherever that is, e.g. as RepeatMasker Aurora's tandem-repeat input.
 
-Results on the release paper's benchmark genomes:
-- 85–100% of the coverage of `ultra -p 500`
-- a false discovery rate no higher than ULTRA's
-- about 2–4% of ULTRA's CPU time
+Results on the release paper's benchmark genomes (periods up to 500):
+- 87–102% of the coverage of `ultra -p 500`
+- a false discovery rate within 0.02 of ultra's (higher on six genomes, lower on three)
+- about 4% of ultra's CPU time
 
 ```
 ultrafast -t 16 -o genome.json genome.fa     # ULTRA at periods <= 20 plus FasTAN

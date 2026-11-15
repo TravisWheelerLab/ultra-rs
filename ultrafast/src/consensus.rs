@@ -87,33 +87,70 @@ impl Profile {
 
 impl Scratch {
     fn new() -> Scratch {
-        Scratch { bt: Vec::new(), d: Vec::new(), e: Vec::new() }
+        Scratch { bt: Vec::new(), row: Vec::new(), d: Vec::new(), e: Vec::new() }
     }
 }
 
 struct Scratch {
+    /// Traceback, 2 bits per cell (`pack_row`).
     bt: Vec<u8>,
+    /// The current row's traceback, a byte per cell.
+    row: Vec<u8>,
     d: Vec<i32>,
     e: Vec<i32>,
+}
+
+/// Bytes per traceback row of `l` cells at 2 bits per cell.
+#[inline]
+pub(crate) fn row_bytes(l: usize) -> usize {
+    l.div_ceil(4)
+}
+
+/// Pack a row of traceback codes (0-3) into 2 bits per cell.
+#[inline]
+pub(crate) fn pack_row(row: &[u8], dst: &mut [u8]) {
+    let mut chunks = row.chunks_exact(4);
+    for (d, ch) in dst.iter_mut().zip(&mut chunks) {
+        // four codes, one per byte, to 2 bits each
+        let x = u32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]);
+        *d = ((x & 3) | ((x >> 6) & 0xC) | ((x >> 12) & 0x30) | ((x >> 18) & 0xC0)) as u8;
+    }
+    let rest = chunks.remainder();
+    if !rest.is_empty() {
+        let mut x = 0u8;
+        for (t, &b) in rest.iter().enumerate() {
+            x |= b << (2 * t);
+        }
+        dst[row.len() / 4] = x;
+    }
+}
+
+/// Traceback code of cell (i, k) in a packed traceback with `rb` bytes per row.
+#[inline]
+pub(crate) fn bt_get(bt: &[u8], rb: usize, i: usize, k: usize) -> u8 {
+    (bt[i * rb + k / 4] >> (2 * (k % 4))) & 3
 }
 
 /// Align s to cyclic u; add to the profile; return the edit distance.
 fn align_window(s: &[u8], u: &[u8], sc: &mut Scratch, p: &mut Profile, mut cols: Option<&mut [i32]>) -> u64 {
     let l = u.len();
     let n = s.len();
-    let need = (n + 1) * l;
+    let rb = row_bytes(l);
+    let need = (n + 1) * rb;
     if sc.bt.len() < need {
         sc.bt.resize(need, 0);
     }
+    sc.row.clear();
+    sc.row.resize(l, 0);
     sc.d.clear();
     sc.d.resize(l, 0);
     sc.e.clear();
     sc.e.resize(l, 0);
     let (mut d, mut e) = (std::mem::take(&mut sc.d), std::mem::take(&mut sc.e));
     let bt = &mut sc.bt;
+    let b: &mut [u8] = &mut sc.row[..l];
     for i in 1..=n {
         let a = s[i - 1];
-        let b = &mut bt[i * l..(i + 1) * l];
         for k in 0..l {
             let pk = if k > 0 { k - 1 } else { l - 1 };
             let m = d[pk] + if a == 4 || u[pk] != a { 1 } else { 0 };
@@ -136,6 +173,7 @@ fn align_window(s: &[u8], u: &[u8], sc: &mut Scratch, p: &mut Profile, mut cols:
             }
             j = nj;
         }
+        pack_row(b, &mut bt[i * rb..(i + 1) * rb]);
         std::mem::swap(&mut d, &mut e);
     }
     let mut best = 0;
@@ -151,7 +189,7 @@ fn align_window(s: &[u8], u: &[u8], sc: &mut Scratch, p: &mut Profile, mut cols:
     let (mut i, mut k) = (n, best);
     let (mut pending, mut first) = (false, 4u8);
     while i > 0 {
-        let b = bt[i * l + k];
+        let b = bt_get(bt, rb, i, k);
         let pk = if k > 0 { k - 1 } else { l - 1 };
         if b == BI {
             pending = true;
@@ -201,7 +239,10 @@ fn align_window(s: &[u8], u: &[u8], sc: &mut Scratch, p: &mut Profile, mut cols:
 
 fn window_len(n: usize, l: usize, par: &Params) -> usize {
     let mut w = if par.window > 0 { par.window } else { (40 * l).max(20_000) };
-    let cap = (par.max_cells / l.max(1)).max(3 * l);
+    // at least three units per window, unless that passes max_cells (units above ~9.5 kb
+    // by default): then max_cells cells, so memory stays bounded
+    let l = l.max(1);
+    let cap = if 3 * l * l <= par.max_cells { (par.max_cells / l).max(3 * l) } else { (par.max_cells / l).max(1) };
     w = w.min(cap);
     w.min(n).max(1)
 }
@@ -294,7 +335,7 @@ pub fn refine(array: &[u8], seed: &[u8], par: &Params) -> Consensus {
 fn refine_codes(s: &[u8], mut u: Vec<u8>, par: &Params, sc: &mut Scratch) -> (Vec<u8>, u64, usize, u64) {
     let mut best: Option<(Vec<u8>, u64, u64)> = None;
     let mut rounds = 0;
-    for r in 0..par.rounds {
+    for r in 0..par.rounds.max(1) {
         let mut p = Profile::new(u.len());
         let ed = align_all(s, &u, par, sc, &mut p);
         rounds = r + 1;
@@ -452,7 +493,7 @@ fn split_rec(s: &[u8], off: usize, u: Vec<u8>, par: &Params, sp: &SplitParams, s
     let base = align_all(sl, &u, par, sc, &mut p) + align_all(sr, &u, par, sc, &mut p);
     let gain = base as f64 - (el + er) as f64;
     let ok = gain >= sp.min_gain && gain >= sp.min_gain_frac * base as f64;
-    if std::env::var_os("FASTANRS_SPLIT_DEBUG").is_some() {
+    if std::env::var_os("ULTRAFAST_SPLIT_DEBUG").is_some() {
         eprintln!("splitcand\t{}\t{}\t{}\t{}\t{}\t{}", off + k, s.len(), l, base, gain, ok as u8);
     }
     if !ok {

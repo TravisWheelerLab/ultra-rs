@@ -25,6 +25,8 @@ path = "src/main.rs"
 
 # ultrafast/ (the FasTAN + ULTRA hybrid) is a separate crate so the ultra library
 # keeps no dependencies. `cargo build --release` here builds both tools.
+# Publishing: `cargo publish -p ultra-repeats` (ultrafast is not published, so a
+# plain `cargo publish` stops with "ultrafast cannot be published").
 [workspace]
 members = [".", "ultrafast"]
 default-members = [".", "ultrafast"]
@@ -36,6 +38,4 @@ version = "0.2.1"
 [profile.release]
 opt-level = 3
 debug = false
-
-[profile.release.package.ultrafast]
 codegen-units = 1

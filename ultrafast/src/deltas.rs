@@ -46,14 +46,17 @@ const BI: u8 = 2;
 const BD: u8 = 3;
 
 fn align_window_path(s: &[u8], u: &[u8], cm: i32, ci: i32, out: &mut Vec<Op>) {
+    use crate::consensus::{bt_get, pack_row, row_bytes};
     let l = u.len();
     let n = s.len();
-    let mut bt = vec![0u8; (n + 1) * l];
+    let rb = row_bytes(l);
+    let mut bt = vec![0u8; (n + 1) * rb];
+    let mut row = vec![0u8; l];
     let mut d = vec![0i32; l];
     let mut e = vec![0i32; l];
     for i in 1..=n {
         let a = s[i - 1];
-        let b = &mut bt[i * l..(i + 1) * l];
+        let b = &mut row[..];
         for k in 0..l {
             let pk = if k > 0 { k - 1 } else { l - 1 };
             let m = d[pk] + if a == 4 || u[pk] != a { cm } else { 0 };
@@ -75,6 +78,7 @@ fn align_window_path(s: &[u8], u: &[u8], cm: i32, ci: i32, out: &mut Vec<Op>) {
             }
             j = nj;
         }
+        pack_row(b, &mut bt[i * rb..(i + 1) * rb]);
         std::mem::swap(&mut d, &mut e);
     }
     let mut best = 0;
@@ -86,7 +90,7 @@ fn align_window_path(s: &[u8], u: &[u8], cm: i32, ci: i32, out: &mut Vec<Op>) {
     let (mut i, mut k) = (n, best);
     let start = out.len();
     while i > 0 {
-        let b = bt[i * l + k];
+        let b = bt_get(&bt, rb, i, k);
         let pk = if k > 0 { k - 1 } else { l - 1 };
         match b {
             BI => {
@@ -121,7 +125,12 @@ pub fn path(array: &[u8], unit: &[u8], max_cells: usize, (cm, ci): (i32, i32)) -
         out.extend(std::iter::repeat(Op::I).take(s.len()));
         return out;
     }
-    let w = (max_cells / u.len().max(1)).clamp(3 * u.len(), 200_000).min(s.len().max(1));
+    // windows of at least three units, up to 200 kb; but a unit so long that three of
+    // them pass max_cells (above ~9.5 kb by default) gets windows of max_cells cells,
+    // shorter than three units, so memory stays bounded (2 bits per cell)
+    let l = u.len();
+    let w = if 3 * l * l <= max_cells { (max_cells / l).clamp(3 * l, 200_000.max(3 * l)) } else { (max_cells / l).max(1) };
+    let w = w.min(s.len().max(1));
     if s.len() <= w {
         align_window_path(&s, &u, cm, ci, &mut out);
         return out;
@@ -371,6 +380,18 @@ pub fn te_deltas(seq: &[u8], beg: usize, unit: &[u8], ops: &[Op], m: &Matrix, wi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_windows_for_units_too_long_for_three_per_window() {
+        // three units would pass max_cells: windows shorter than a unit, no panic, and
+        // every array base appears once
+        let unit: Vec<u8> = (0..200).map(|i| b"ACGT"[(i * 7 + i / 3) % 4]).collect();
+        let arr = [unit.clone(), unit.clone(), unit[..50].to_vec()].concat();
+        for max_cells in [1_000, 30_000, 1 << 28] {
+            let ops = path(&arr, &unit, max_cells, ULTRA_COSTS);
+            assert_eq!(ops.iter().filter(|o| !matches!(o, Op::D(_))).count(), arr.len(), "max_cells {max_cells}");
+        }
+    }
 
     #[test]
     fn path_covers_every_base() {
