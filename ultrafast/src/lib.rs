@@ -445,77 +445,103 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
             (e > s).then_some((si, s, e, f))
         })
         .collect();
-    // filler calls by sequence, sorted by start, with the longest per sequence (for overlap lookups)
-    let mut by_seq: Vec<Vec<(usize, usize, &UltraRecord)>> = vec![Vec::new(); recs.len()];
-    for &(si, s, e, f) in &fl {
-        by_seq[si].push((s, e, f));
+    // filler calls (index into `fl`) by sequence, sorted by start, with the longest per
+    // sequence (for overlap lookups)
+    let mut by_seq: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); recs.len()];
+    for (i, &(si, s, e, _)) in fl.iter().enumerate() {
+        by_seq[si].push((s, e, i));
     }
     by_seq.iter_mut().for_each(|v| v.sort_unstable_by_key(|x| (x.0, x.1)));
     let longest: Vec<usize> = by_seq.iter().map(|v| v.iter().map(|x| x.1 - x.0).max().unwrap_or(0)).collect();
     let period_of = |c: &Call| if c.cons.is_some() { c.unit.len() } else { c.period };
-    let ov = |a: (usize, usize), b: (usize, usize)| a.1.min(b.1).saturating_sub(a.0.max(b.0));
     // A FasTAN call whose period is above the filler's cap is one the filler cannot
-    // report. It is protected (kept, and suppresses the filler calls it covers more than
-    // half of) when it explains its bases better than the filler calls there: its score
-    // under ULTRA's model beats the filler calls' deltas summed over the same bases. That
-    // settles units just above the cap that ULTRA calls at the cap with an indel per copy
-    // (FasTAN wins), a satellite with a microsatellite in each copy (FasTAN wins), and
-    // short divergent arrays FasTAN called at a multiple of the period (ULTRA wins). A
-    // fragment of one larger filler call (it covers more than half of the FasTAN call,
-    // which covers no more than half of it) is never protected.
-    let protected: Vec<bool> = calls
+    // report, so it competes with the filler calls it overlaps, by score under ULTRA's
+    // model. Each side is scored base by base: the FasTAN call with
+    // `deltas::ultra_deltas`, a filler call with the larger of its own deltas and
+    // `deltas::ultra_deltas` on its own unit (the two agree closely on arrays without
+    // indels and differ around indels in either direction).
+    //  * The FasTAN call wins when its whole score beats the filler calls' scores on the
+    //    bases they share with it (the filler leaves the rest of the span as background,
+    //    which scores nothing) by more than `UNIT_BASE_BITS` for every base its unit is
+    //    longer than the unit of the filler call sharing the most bases. A winner is
+    //    kept; the coverage rule below decides for the others.
+    //  * A filler call is dropped when a winner covers more than half of it and
+    //    outscores it on the bases they share. There the winner's first copy, which has
+    //    no copy before it to be compared with, is scored against the copy after it.
+    // A fragment of one larger filler call (it covers more than half of the FasTAN call,
+    // which covers no more than half of it) is not compared.
+    let verdicts: Vec<(bool, Vec<usize>)> = calls
         .par_iter()
         .with_max_len(1)
         .map(|c| {
-            let Some(cap) = filler_cap.filter(|_| prefer_filler) else { return false };
-            if period_of(c) <= cap {
-                return false;
+            let none = (false, Vec::new());
+            let Some(cap) = filler_cap.filter(|_| prefer_filler) else { return none };
+            let period = period_of(c);
+            if period <= cap {
+                return none;
             }
             let v = &by_seq[c.seq];
             let i0 = v.partition_point(|x| x.0 + longest[c.seq] <= c.start);
             let (cs, ce) = (c.start, c.end);
-            let over: Vec<&(usize, usize, &UltraRecord)> = v[i0..].iter().take_while(|x| x.0 < ce).filter(|x| x.1 > cs).collect();
+            let over: Vec<(usize, usize, usize)> = v[i0..].iter().take_while(|x| x.0 < ce).filter(|x| x.1 > cs).copied().collect();
             if over.is_empty() {
-                return true;
+                return none;
             }
-            if over.iter().any(|&&(s, e, _)| {
-                let o = ov((cs, ce), (s, e));
-                2 * o > ce - cs && 2 * o <= e - s
+            let shared = |s: usize, e: usize| (s.max(cs), e.min(ce));
+            if over.iter().any(|&(s, e, _)| {
+                let (a, b) = shared(s, e);
+                2 * (b - a) > ce - cs && 2 * (b - a) <= e - s
             }) {
-                return false;
+                return none;
             }
             let seq = &recs[c.seq].seq;
-            let fastan: f64 = deltas::ultra_deltas(&seq[cs..ce], c.unit.len(), &deltas::path(&seq[cs..ce], &c.unit, max_cells, deltas::ULTRA_COSTS))
+            let score = |arr: &[u8], unit: &[u8]| deltas::ultra_deltas(arr, unit.len(), &deltas::path(arr, unit, max_cells, deltas::ULTRA_COSTS));
+            let fastan = score(&seq[cs..ce], &c.unit);
+            let mut filler_total = 0.0;
+            let mut most_shared = (0, 0); // (shared bases, period) of the filler call sharing the most
+            let theirs: Vec<f64> = over
                 .iter()
-                .sum();
-            let filler: f64 = over
-                .iter()
-                .map(|&&(s, e, f)| {
-                    let (a, b) = (s.max(cs), e.min(ce));
-                    if f.position_score_deltas.len() == f.length {
-                        f.position_score_deltas[a - f.start..b - f.start].iter().sum::<f64>()
+                .map(|&(s, e, i)| {
+                    let f = fl[i].3;
+                    let (a, b) = shared(s, e);
+                    let own: f64 = if f.position_score_deltas.len() == f.length {
+                        f.position_score_deltas[a - f.start..b - f.start].iter().sum()
                     } else {
                         f.score * (b - a) as f64 / f.length.max(1) as f64
-                    }
+                    };
+                    let same: f64 = score(&seq[s..e], f.consensus.as_bytes())[a - s..b - s].iter().sum();
+                    filler_total += own.max(same);
+                    most_shared = most_shared.max((b - a, f.period));
+                    own.max(same)
                 })
-                .sum();
-            fastan > filler
+                .collect();
+            let longer = period.saturating_sub(most_shared.1) as f64;
+            if fastan.iter().sum::<f64>() <= filler_total + UNIT_BASE_BITS * longer {
+                return none;
+            }
+            // the first copy against the copy after it: score the array read backwards
+            let mut ours = fastan;
+            let first = period.min(ours.len());
+            if over.iter().any(|&(s, _, _)| s < cs + first) {
+                let arr: Vec<u8> = seq[cs..ce].iter().rev().copied().collect();
+                let unit: Vec<u8> = c.unit.iter().rev().copied().collect();
+                let backward = score(&arr, &unit);
+                for (x, y) in ours[..first].iter_mut().zip(backward.iter().rev()) {
+                    *x = *y;
+                }
+            }
+            let beaten = over
+                .iter()
+                .zip(&theirs)
+                .filter(|&(&(s, e, _), &t)| {
+                    let (a, b) = shared(s, e);
+                    2 * (b - a) > e - s && ours[a - cs..b - cs].iter().sum::<f64>() > t
+                })
+                .map(|(x, _)| x.2)
+                .collect();
+            (true, beaten)
         })
         .collect();
-    // filler calls a single protected FasTAN call covers more than half of are dropped
-    let mut prot: Vec<Vec<(usize, usize)>> = vec![Vec::new(); recs.len()];
-    for (i, c) in calls.iter().enumerate() {
-        if protected[i] {
-            prot[c.seq].push((c.start, c.end));
-        }
-    }
-    prot.iter_mut().for_each(|v| v.sort_unstable());
-    let plongest: Vec<usize> = prot.iter().map(|v| v.iter().map(|x| x.1 - x.0).max().unwrap_or(0)).collect();
-    let swallowed = |si: usize, s: usize, e: usize| {
-        let v = &prot[si];
-        let i0 = v.partition_point(|x| x.0 + plongest[si] <= s);
-        v[i0..].iter().take_while(|x| x.0 < e).any(|&x| 2 * ov(x, (s, e)) > e - s)
-    };
     // with FasTAN preferred, all FasTAN calls together suppress filler calls
     let mut ivs: Vec<Vec<(usize, usize)>> = vec![Vec::new(); recs.len()];
     if !prefer_filler {
@@ -532,16 +558,25 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
     }
     let fivs: Vec<Vec<(usize, usize)>> = fivs.into_iter().map(merge).collect();
     // (seq index, start, end, unit, period, filler record whose deltas to keep, re-vote the unit, parts)
+    let kept: Vec<bool> = calls
+        .iter()
+        .zip(&verdicts)
+        .map(|(c, v)| !prefer_filler || v.0 || covered(c.start, c.end, &fivs[c.seq]) <= 0.5)
+        .collect();
+    let mut beaten = vec![false; fl.len()];
+    for v in &verdicts {
+        v.1.iter().for_each(|&i| beaten[i] = true);
+    }
     type Job<'a> = (usize, usize, usize, Vec<u8>, usize, Option<&'a UltraRecord>, bool, Vec<(usize, Vec<u8>)>);
     let mut jobs: Vec<Job> = calls
         .iter()
         .enumerate()
-        .filter(|&(i, c)| !prefer_filler || protected[i] || covered(c.start, c.end, &fivs[c.seq]) <= 0.5)
+        .filter(|&(i, _)| kept[i])
         .map(|(_, c)| (c.seq, c.start, c.end, c.unit.clone(), period_of(c), None, false, c.parts.clone()))
         .collect();
     let mut nfill = 0;
-    for &(si, s, e, f) in &fl {
-        if if prefer_filler { swallowed(si, s, e) } else { covered(s, e, &ivs[si]) > 0.5 } {
+    for (i, &(si, s, e, f)) in fl.iter().enumerate() {
+        if if prefer_filler { beaten[i] } else { covered(s, e, &ivs[si]) > 0.5 } {
             continue;
         }
         let keep = keep_filler_deltas && f.position_score_deltas.len() == f.length && e == f.start + f.length;
@@ -603,10 +638,8 @@ pub struct Merge<'a> {
     /// Where they overlap, the filler call wins (else FasTAN's does).
     pub prefer_filler: bool,
     /// The filler's maximum period (ULTRA's -p). With `prefer_filler`, a FasTAN call
-    /// whose period is above it and that scores better under ULTRA's model than the
-    /// filler calls on the same bases is kept, and filler calls it covers more than half
-    /// of are dropped (a fragment of one larger filler call never is). None: filler calls
-    /// always win.
+    /// whose period is above it is compared with the filler calls it overlaps by score
+    /// under ULTRA's model, as `hybrid` describes. None: filler calls always win.
     pub filler_cap: Option<usize>,
     /// Re-vote filler units with the TRF-style caller.
     pub filler_cons: Option<&'a Options>,
@@ -708,10 +741,13 @@ impl Hybrid {
 /// Merging (unless `opt.prefer_fastan`): a FasTAN call with a period up to ULTRA's
 /// maximum is dropped when ULTRA calls cover more than half of it. A FasTAN call with
 /// a longer period, which ULTRA cannot report, is kept when its score under ULTRA's
-/// model beats the ULTRA calls' deltas summed over the same bases, and then ULTRA
-/// calls it covers more than half of are dropped (e.g. a microsatellite inside each
-/// copy of a satellite). A fragment of one larger ULTRA call never wins this way.
-/// Calls can still overlap in part.
+/// model is higher than the scores of the ULTRA calls it overlaps, on the bases they
+/// share with it, by more than 2 bits for every base its unit is longer than the unit
+/// of the ULTRA call sharing the most bases. It then replaces each ULTRA call that it
+/// covers more than half of and outscores on the bases the two share (e.g. a short
+/// microsatellite inside each copy of a satellite); other ULTRA calls inside it are
+/// kept (e.g. a long microsatellite that interrupts a satellite). A fragment of one
+/// larger ULTRA call is never kept this way. Calls can still overlap.
 ///
 /// Threads: `opt.threads` (0 = all cores) in total, split between ULTRA and FasTAN,
 /// which run at the same time; with 1 they run one after the other.
@@ -791,6 +827,12 @@ fn hybrid_in_pool(input: &str, opt: &HybridOptions, ultra_threads: usize) -> any
     }
     Ok(Hybrid { seqs, arrays, repeats, n_ultra: m.n_filler, n_unmatched: m.n_unmatched })
 }
+
+/// What a FasTAN call must gain over the filler calls it competes with for every
+/// base its unit is longer than theirs: 2 bits, the information in one base. A longer
+/// unit has more bases to fit to the same array, and without this charge a divergent
+/// array is sometimes reported at two or three times its period.
+const UNIT_BASE_BITS: f64 = 2.0;
 
 /// Rounded to six decimals, as ULTRA writes its numbers.
 fn round6(x: f64) -> f64 {

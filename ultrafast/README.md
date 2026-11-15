@@ -54,16 +54,21 @@ Output is `{"Repeats": [...]}` with ULTRA's fields: `SequenceName`, `Start` (0-b
 
 ### Merging
 - A FasTAN call with a period up to `-p` is dropped when ULTRA calls cover more than half of it.
-- A FasTAN call with a longer period, which ULTRA cannot report, competes with the ULTRA calls it
-  overlaps: its score under ULTRA's model is compared with the ULTRA calls' per-base deltas summed over
-  the same bases. If it scores higher it is kept, and ULTRA calls it covers more than half of are dropped.
-  Otherwise the first rule applies. This keeps a 21-23 bp unit that ULTRA would call at period 20 with an
-  indel in every copy, and a satellite whose copies each hold a microsatellite (reported as the
-  satellite). It also lets ULTRA win where FasTAN called a short, divergent array at a multiple of its
-  period.
+- A FasTAN call with a longer period, which ULTRA cannot report, is compared with the ULTRA calls it
+  overlaps, all scored under ULTRA's model. It is kept when its score over its whole span is higher than
+  the ULTRA calls' scores on the bases they share with it, by more than 2 bits for every base its unit is
+  longer than the unit of the ULTRA call sharing the most bases. Two bits is the information in one base.
+  A longer unit has more bases to fit to the same array, and without this charge ultrafast sometimes
+  reports a divergent array at two or three times its period. Otherwise the first rule applies.
+- A FasTAN call kept this way replaces each ULTRA call that it covers more than half of and outscores on
+  the bases the two share. Other ULTRA calls inside it are reported as well. So a 21-23 bp unit, which
+  ULTRA at `-p 20` calls at period 20 with an indel in every copy, is reported at its own period. A
+  satellite whose copies each hold a short microsatellite is reported as the satellite, along with any
+  microsatellite call that it does not outscore. A long microsatellite that interrupts a satellite is
+  reported in addition to the satellite.
 - A FasTAN call that is a fragment of one larger ULTRA call (the ULTRA call covers more than half of it,
-  and it covers no more than half of the ULTRA call) never wins this way.
-- Calls can still overlap in part. `--prefer-fastan` keeps every FasTAN call and drops ULTRA calls covered
+  and it covers no more than half of the ULTRA call) is never kept this way.
+- Calls can still overlap. `--prefer-fastan` keeps every FasTAN call and drops ULTRA calls covered
   more than half by FasTAN calls. With `--filler`, the cap is the longest period in the file.
 
 ### Memory

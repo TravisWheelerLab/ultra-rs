@@ -114,6 +114,89 @@ fn satellite_with_a_microsatellite_in_each_copy() {
     assert!(out0.iter().map(span).any(|(s, e, p)| p == 60 && s <= 2005 && e + 5 >= 4400));
 }
 
+/// `s` with each base replaced by another with probability `pct`/100.
+fn substituted(state: &mut u64, s: &[u8], pct: u64) -> Vec<u8> {
+    let draws = bases(state, 5 * s.len());
+    s.iter()
+        .zip(draws.chunks(5))
+        .map(|(&c, d)| {
+            // four draws make a number from 0 to 255; the fifth is the replacement
+            let x = d[..4].iter().fold(0u64, |a, &b| 4 * a + b"ACGT".iter().position(|&y| y == b).unwrap() as u64);
+            if x * 100 < pct * 256 && d[4] != c { d[4] } else { c }
+        })
+        .collect()
+}
+
+#[test]
+fn microsatellite_inside_part_of_a_satellite_is_kept() {
+    // a period-40 satellite with substitutions that holds 300 bp of (AGAT)n: FasTAN calls
+    // the whole span at period 40 and scores badly on the AGAT bases, so ULTRA's AGAT call
+    // must stay
+    let d = dir("micro_in_sat");
+    let mut st = 5u64;
+    let unit = bases(&mut st, 40);
+    let mut s = bases(&mut st, 2000);
+    for _ in 0..50 {
+        s.extend(substituted(&mut st, &unit, 8));
+    }
+    s.extend(b"AGAT".repeat(75));
+    for _ in 0..24 {
+        s.extend(substituted(&mut st, &unit, 8));
+    }
+    s.extend(bases(&mut st, 2000));
+    let fa = d.join("in.fa");
+    write_fa(&fa, &[("x", s)], "\n");
+    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    assert!(spans.iter().any(|&(s, e, p)| p == 4 && s <= 4005 && e >= 4290), "{spans:?}");
+    assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 2100 && e >= 5200), "{spans:?}");
+}
+
+#[test]
+fn divergent_array_is_not_reported_at_twice_its_period() {
+    // 32 copies of a 12 bp unit with 15% substitutions (simulated). FasTAN calls it at
+    // period 24, which scores a fraction of a bit below ULTRA's period-12 call; ULTRA's stays
+    let d = dir("divergent");
+    let s = b"TGGGGCTTATATTTGCAGGGAGCGGCTTTTCCATTCACTCGAATCTGATAATCGGGGACACGCGTAGACGATGCTAGTGGCTCCGTGCTAC\
+CCCCCAGGTTAAACTGTACCATAAACGGTACAATATACTATACCATAAACTGTACCATAAGCTGTACCATAGTCTGTACCATAAACTGTATCACATACTG\
+CACCATATGCTGTATCATAAACTGCACCATAAACTGTACCATGAACTGTACCATAAATGGTACCATGAACTGAATCATAAACTGTAGCATAAACTGTACC\
+ATAAACTGCACCATACACTGTCGCCTAAACTGTAGCATAAGCTGTACCATACACTGTGCCATTGACTTTACCCAAAACTCTTCTCTTAACTGTACCATAA\
+ACTGTACCATTAACTGGACCATAAACTGTACCATTAACTGGACAATAATCTGTCCCATAAAATGTTCCAGAACCTGTACCATAAACTATACCCCGGCACT\
+CCGCCTGGGACTAAATTCACTGCAGACCCCTAGGGGGCACTGATTAGAAATGATTATGGCCGCAGACCTAACAAAAATGCTGGCGAATGTTAG"
+        .to_vec();
+    let fa = d.join("in.fa");
+    write_fa(&fa, &[("d", s)], "\n");
+    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    assert!(spans.iter().any(|&(s, e, p)| p == 12 && s <= 110 && e >= 470), "{spans:?}");
+    assert!(!spans.iter().any(|&(_, _, p)| p == 24), "{spans:?}");
+    // FasTAN alone does call it at period 24
+    let alone: Vec<_> = records(&["-p", "0"], &fa).iter().map(span).collect();
+    assert!(alone.iter().any(|&(_, _, p)| p == 24), "{alone:?}");
+}
+
+#[test]
+fn higher_order_repeat_keeps_its_long_period() {
+    // two 12 bp monomers that differ at three bases alternate: the unit is 24 bp. ULTRA at
+    // -p 20 calls period 12 with mismatches in every copy; FasTAN's period-24 call must win
+    let d = dir("hor");
+    let mut st = 41u64;
+    let a = bases(&mut st, 12);
+    let mut b = a.clone();
+    for i in [2, 6, 10] {
+        b[i] = if a[i] == b'A' { b'C' } else { b'A' };
+    }
+    let mut s = bases(&mut st, 1000);
+    for _ in 0..30 {
+        s.extend(&a);
+        s.extend(&b);
+    }
+    s.extend(bases(&mut st, 1000));
+    let fa = d.join("in.fa");
+    write_fa(&fa, &[("h", s)], "\n");
+    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    assert!(spans.iter().any(|&(s, e, p)| p == 24 && s <= 1005 && e >= 1715), "{spans:?}");
+    assert!(!spans.iter().any(|&(s, e, p)| p == 12 && s < 1700 && e > 1020), "{spans:?}");
+}
+
 #[test]
 fn crlf_and_awkward_names() {
     let d = dir("names");
@@ -227,6 +310,10 @@ fn output_to_a_device_and_option_checks() {
     assert!(!run(&["--rounds", "0"], &fa).status.success());
     assert!(!run(&["--gc", "40"], &fa).status.success(), "--gc without --delta-model te");
     assert!(!run(&["--no-split", "--split-min-gain", "3"], &fa).status.success());
+    assert!(!run(&["--rescore-only"], &fa).status.success(), "--rescore-only without --filler");
+    assert!(!run(&["--rescore-only", "-p", "0"], &fa).status.success(), "--rescore-only without --filler");
+    assert!(!run(&["--delta-scale", "nan"], &fa).status.success());
+    assert!(!run(&["--filler-min-score", "nan"], &fa).status.success());
     // nothing left behind next to the output
     let o = d.join("o.json");
     assert!(run(&["-o", o.to_str().unwrap()], &fa).status.success());

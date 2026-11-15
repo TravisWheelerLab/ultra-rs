@@ -11,9 +11,10 @@ use std::io::Write;
 ///
 /// Merging: a FasTAN call with a period up to -p is dropped when ULTRA calls cover
 /// more than half of it. A FasTAN call with a longer period, which ULTRA cannot
-/// report, is kept when it scores better under ULTRA's model than the ULTRA calls on
-/// the same bases, and then ULTRA calls it covers more than half of are dropped.
-/// Calls may still overlap in part. --prefer-fastan keeps every FasTAN call instead.
+/// report, is kept when it scores better under ULTRA's model than the ULTRA calls it
+/// overlaps, by 2 bits for every base its unit is longer than theirs. It then replaces
+/// each ULTRA call that it covers more than half of and outscores on the bases they
+/// share. Calls may still overlap. --prefer-fastan keeps every FasTAN call instead.
 ///
 /// ULTRA calls keep ULTRA's own units, scores and per-base deltas. FasTAN calls
 /// get a TRF-style iterative consensus unit, are split where the unit changes
@@ -126,6 +127,16 @@ fn main() -> Result<()> {
             }
         }
     }
+    // clap drops `requires = "filler"` when -p, which conflicts with --filler, is given
+    if a.rescore_only && a.filler.is_none() {
+        anyhow::bail!("--rescore-only needs --filler");
+    }
+    if !a.delta_scale.is_finite() {
+        anyhow::bail!("--delta-scale must be a finite number, not {}", a.delta_scale);
+    }
+    if a.filler_min_score.is_nan() {
+        anyhow::bail!("--filler-min-score must be a number");
+    }
     if let Some(g) = a.gc {
         if !(0.0..=100.0).contains(&g) {
             anyhow::bail!("--gc must be a percentage from 0 to 100, not {g}");
@@ -168,7 +179,8 @@ fn main() -> Result<()> {
     };
     let h = ultrafast::hybrid(&a.input, &opt)?;
     if h.n_unmatched > 0 {
-        eprintln!("ultrafast: warning: {} --filler calls name sequences not in {}; they were dropped", h.n_unmatched, a.input);
+        let whose = if a.filler.is_some() { "--filler" } else { "ULTRA" };
+        eprintln!("ultrafast: warning: {} {whose} calls name sequences not in {}; they were dropped", h.n_unmatched, a.input);
     }
     match a.out.as_deref() {
         // a regular file is written in full and then renamed into place; anything
