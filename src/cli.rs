@@ -1480,7 +1480,7 @@ impl Settings {
     pub fn json_string(&self) -> String {
         let mut j = String::new();
         fn s(j: &mut String, name: &str, v: &str) {
-            j.push_str(&format!("\"{}\": \"{}\",\n", name, v));
+            j.push_str(&format!("\"{}\": \"{}\",\n", name, crate::writers::json_escape(v)));
         }
         fn b(j: &mut String, name: &str, v: bool) {
             j.push_str(&format!("\"{}\": {},\n", name, if v { "true" } else { "false" }));
@@ -1727,6 +1727,22 @@ mod tests {
             let expected = expected.replace("@VERSION@", ULTRA_VERSION_STRING);
             assert_eq!(full, expected, "json for {:?}", a);
         }
+    }
+
+    #[test]
+    fn json_escapes_paths_and_arguments() {
+        let mut s = Settings::new();
+        let mut err = String::new();
+        let a = ["./ultra", "-o", "out \"1\".json", "C:\\data\\ex.fa"];
+        assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(true), "{err}");
+        s.assign_settings();
+        let j = s.json_string();
+        assert!(j.contains("\"in_file\": \"C:\\\\data\\\\ex.fa\",\n"), "{j}");
+        assert!(j.contains("\"out_file\": \"out \\\"1\\\".json\",\n"), "{j}");
+        assert!(
+            j.starts_with("\"args\": \"./ultra -o out \\\"1\\\".json C:\\\\data\\\\ex.fa\",\n"),
+            "{j}"
+        );
     }
 
     #[test]

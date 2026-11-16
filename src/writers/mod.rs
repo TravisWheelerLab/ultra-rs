@@ -197,6 +197,27 @@ pub(crate) fn clean_sequence_name(name: &str) -> &str {
     name
 }
 
+/// `s` as the contents of a JSON string: `"`, `\` and control characters are
+/// escaped.
+pub(crate) fn json_escape(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.chars().any(|c| c == '"' || c == '\\' || c < ' ') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// `%s` of a C++ `std::string` via `c_str()`: stops at the first NUL.
 pub(crate) fn c_str(s: &[u8]) -> &[u8] {
     match s.iter().position(|&c| c == 0) {
@@ -256,6 +277,11 @@ mod tests {
         assert_eq!(clean_sequence_name("crlf\r"), "crlf");
         assert_eq!(clean_sequence_name("caf\u{e9}x"), "caf");
         assert_eq!(clean_sequence_name(""), "");
+        assert_eq!(json_escape("chr1 plain caf\u{e9}"), "chr1 plain caf\u{e9}");
+        assert_eq!(
+            json_escape("a\"b\\c\td\re\nf\u{1}g"),
+            "a\\\"b\\\\c\\td\\re\\nf\\u0001g"
+        );
     }
 
     #[test]

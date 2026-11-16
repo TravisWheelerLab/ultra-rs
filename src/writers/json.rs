@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use super::{c_str, pval_for_score, to_string_f32, to_string_f64, RepeatFileWriter};
+use super::{c_str, json_escape, pval_for_score, to_string_f32, to_string_f64, RepeatFileWriter};
 use crate::cli::Settings;
 use crate::repeat::RepeatRegion;
 
@@ -100,8 +100,12 @@ impl RepeatFileWriter for JSONFileWriter {
 
         self.repeats_output += 1;
 
+        // The header line up to a NUL (`%s` of `c_str()`), without the `\r`
+        // that a file with CRLF line endings leaves at its end.
+        let name = repeat.sequence_name.split('\0').next().unwrap_or("");
+        let name = name.strip_suffix('\r').unwrap_or(name);
         out.write_all(b"{\"SequenceName\": \"")?;
-        out.write_all(c_str(repeat.sequence_name.as_bytes()))?;
+        out.write_all(json_escape(name).as_bytes())?;
         out.write_all(b"\"")?;
 
         let kv = |out: &mut dyn Write, key: &str, value: String| {
@@ -217,6 +221,22 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             format!("{{\"Repeats\": [\n{one},\n\n{one}]\n}}")
+        );
+    }
+
+    #[test]
+    fn sequence_name_is_escaped() {
+        let s = Settings::default();
+        let mut out = Vec::new();
+        let mut r = region();
+        r.sequence_name = "id \"quoted\" back\\slash\ttab\r".into();
+        JSONFileWriter::new().write_repeat(&s, &r, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with(
+                "{\"SequenceName\": \"id \\\"quoted\\\" back\\\\slash\\ttab\",\n\"Start\": 100,"
+            ),
+            "{text}"
         );
     }
 

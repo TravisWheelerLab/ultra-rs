@@ -34,6 +34,9 @@
 //! The two programs report different versions (the C++ 1.2.2, this crate its
 //! own), in the `--help` banner and on the first line of JSON output. Before
 //! comparing, the tests rewrite the version in the C++ output to this crate's.
+//! For input with CRLF line endings the C++ also leaves a `\r` at the end of
+//! each JSON `SequenceName`, which this crate drops; the tests remove it from
+//! the C++ output.
 //!
 //! The C++ binary is only deterministic with one thread, so thread-count cases
 //! compare the Rust binary at `-t N` against the reference at `-t 1`, looking
@@ -383,13 +386,14 @@ const REFERENCE_VERSION: &str = "1.2.2";
 
 /// Rewrites the version in reference output to this crate's version, in the
 /// two places ULTRA prints it: the `--help` banner and the first line of
-/// JSON output.
+/// JSON output. Also drops the `\r` that the reference leaves at the end of
+/// a JSON `SequenceName` when the input has CRLF line endings.
 fn with_port_version(bytes: Vec<u8>) -> Vec<u8> {
     let Ok(text) = String::from_utf8(bytes.clone()) else {
         return bytes;
     };
     let ours = env!("CARGO_PKG_VERSION");
-    text.replace(
+    text.replace("\r\",\n\"Start\": ", "\",\n\"Start\": ").replace(
         &format!("                Version {REFERENCE_VERSION}\n"),
         &format!("                Version {ours}\n"),
     )
