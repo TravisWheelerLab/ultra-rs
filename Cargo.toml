@@ -6,6 +6,7 @@ description = "Rust port of ULTRA, a tool for finding and annotating tandem repe
 license = "BSD-3-Clause"
 repository = "https://github.com/TravisWheelerLab/ultra-rs"
 readme = "README.md"
+exclude = [".github/"]
 keywords = ["tandem-repeats", "bioinformatics", "genomics", "repeats", "hmm"]
 categories = [
     "science::bioinformatics::sequence-analysis",

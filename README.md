@@ -11,9 +11,12 @@ The repository holds two tools:
 - **`ultrafast`**, a faster hybrid for whole genomes. It finds tandem arrays of any period with FasTAN and runs ULTRA alongside it for short periods (up to 20 by default), then merges the two into ULTRA's JSON output. See [ultrafast](#ultrafast-a-fastan--ultra-hybrid) below.
 
 ## Installing
-Installing ULTRA requires [Rust and Cargo](https://www.rust-lang.org/tools/install). We built and tested this port with Rust 1.94.
+You can download `ultra` and `ultrafast` already built, or build them yourself, which requires [Rust and Cargo](https://www.rust-lang.org/tools/install). We built and tested this port with Rust 1.94.
 
-`ultra` is on crates.io; `ultrafast` is installed from this repository (below).
+`ultra` is on crates.io; `ultrafast` comes with the downloads or is built from this repository.
+
+### Prebuilt downloads
+Each [release](https://github.com/TravisWheelerLab/ultra-rs/releases/latest) has a table of downloads for Linux, macOS and Windows. Download the one for your machine and unpack it. The folder holds `ultra` and `ultrafast`; copy them to a folder on your `PATH`. You do not need Rust. The Linux programs need glibc 2.17 or newer. We run the Windows programs on one example file when we make a release and have not tested them further.
 
 ### From crates.io
 ULTRA is on crates.io as [`ultra-repeats`](https://crates.io/crates/ultra-repeats). To download, build and install it run:
@@ -40,7 +43,7 @@ cargo install --git https://github.com/TravisWheelerLab/ultra-rs ultrafast      
 ```
 
 ### Running
-`cargo install` puts the `ultra` command in `~/.cargo/bin`, which the Rust installer adds to your `PATH`. To check the installation run:
+`cargo install` puts the commands in `~/.cargo/bin`, which the Rust installer adds to your `PATH`. To check the installation run:
 ```
 ultra -h
 ultrafast -h
