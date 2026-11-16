@@ -88,7 +88,7 @@ The crate is also a library: the command is a thin wrapper around `ultrafast::hy
 so depend on it through git or a path:
 ```toml
 [dependencies]
-ultrafast = { git = "https://github.com/TravisWheelerLab/ultra-rs", branch = "master" }
+ultrafast = { git = "https://github.com/TravisWheelerLab/ultra-rs", branch = "main" }
 ```
 ```rust
 let opt = ultrafast::HybridOptions { ultra_period: 20, threads: 8, ..Default::default() };
