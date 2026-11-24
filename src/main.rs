@@ -9,7 +9,7 @@ use ultra_repeats::cli::{
 };
 use ultra_repeats::mask::output_masked_fasta;
 use ultra_repeats::ultra::Ultra;
-use ultra_repeats::writers::{fmt_f, fmt_g};
+use ultra_repeats::writers::{fmt_f, fmt_g, on_write_error};
 
 /// `println!` that ends the program quietly on a closed pipe (and reports
 /// other write errors) instead of panicking; see `writers::on_write_error`.
@@ -17,6 +17,15 @@ macro_rules! say {
     ($($arg:tt)*) => {
         ultra_repeats::writers::print_stdout(&format!("{}\n", format_args!($($arg)*)))
     };
+}
+
+/// Runs `ultra` over its input and writes the remaining repeats. A write
+/// error ends the program as [`on_write_error`] says, before `ultra` is
+/// dropped, so its buffered output is not written after the error.
+fn run(ultra: &mut Ultra) {
+    if let Err(e) = ultra.analyze_file().and_then(|()| ultra.output_repeats(true)) {
+        on_write_error(&e);
+    }
 }
 
 /// Fresh settings, with `upstream_compat` taken from the environment
@@ -38,7 +47,9 @@ fn main_wrapper(argv: &[String]) -> i32 {
     }
 
     settings.assign_settings();
-    settings.print_memory_usage();
+    if let Err(e) = settings.print_memory_usage() {
+        on_write_error(&e);
+    }
     if settings.show_memory {
         exit(0);
     }
@@ -95,8 +106,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
 
             // We first get the normal coverage
             let mut ultra = Ultra::new(&search_setting);
-            ultra.analyze_file();
-            ultra.output_repeats(true);
+            run(&mut ultra);
             seq_length = reader_total_seq_length(&ultra);
             let cvg_tmp = ultra.coverage();
             let real_coverage = cvg_tmp as f64 / seq_length as f64;
@@ -106,8 +116,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
             // Next we get our shuffled coverage
             let mut ultra = Ultra::new(&search_setting);
             ultra.shuffle_sequence = true;
-            ultra.analyze_file();
-            ultra.output_repeats(true);
+            run(&mut ultra);
             let cvg_tmp = ultra.coverage();
             let false_coverage = cvg_tmp as f64 / seq_length as f64;
             shuffled_coverage.push(cvg_tmp);
@@ -170,8 +179,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
 
     // Perform the actual run
     let mut ultra = Ultra::new(&settings);
-    ultra.analyze_file();
-    ultra.output_repeats(true);
+    run(&mut ultra);
     let true_coverage: u64 = ultra.coverage();
     // Check to see if we are making a masked file
     if settings.produce_mask {
@@ -202,8 +210,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
         settings.out_file = String::new();
         let mut ultra = Ultra::new(&settings);
         ultra.shuffle_sequence = true;
-        ultra.analyze_file();
-        ultra.output_repeats(true);
+        run(&mut ultra);
         let shuff_coverage = ultra.coverage();
         let fdr: f32 = shuff_coverage as f32 / true_coverage as f32;
         say!("Estimated false discovery rate: {}", fmt_g(fdr as f64));

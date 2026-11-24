@@ -403,7 +403,9 @@ impl Ultra {
     /// C++ `AnalyzeFile`: reads and analyses the whole input, writing the
     /// settings block and the writers' headers first. Call
     /// [`output_repeats`](Self::output_repeats)`(true)` afterwards to flush.
-    pub fn analyze_file(&mut self) {
+    /// Returns the first error from writing the output; the analysis stops
+    /// there.
+    pub fn analyze_file(&mut self) -> io::Result<()> {
         if self.number_of_threads <= 0 {
             let _ = io::stdout().flush();
             eprintln!("Number of threads must be greater than 0.");
@@ -420,23 +422,22 @@ impl Ultra {
             self.reader().fill_windows_up_to(n);
         }
 
-        self.output_ultra_settings();
-        self.initialize_writer();
+        self.output_ultra_settings()?;
+        self.initialize_writer()?;
 
         if self.number_of_threads == 1 {
-            self.analyze_file_with_thread();
+            self.analyze_file_with_thread()
         } else {
-            self.analyze_file_with_workers();
+            self.analyze_file_with_workers()
         }
     }
 
     /// C++ `InitializeWriter`.
-    pub fn initialize_writer(&mut self) {
+    pub fn initialize_writer(&mut self) -> io::Result<()> {
         for i in 0..self.writers.len() {
-            if let Err(e) = self.writers[i].initialize_writer(&self.settings, &mut self.outs[i]) {
-                crate::writers::on_write_error(&e);
-            }
+            self.writers[i].initialize_writer(&self.settings, &mut self.outs[i])?;
         }
+        Ok(())
     }
 
     /// C++ `GetSequenceWindow` (single-threaded): returns `seq` to the waiting
@@ -483,14 +484,15 @@ impl Ultra {
 
     /// C++ `AnalyzeFileWithThread` for thread 0 with one thread: the plain
     /// sequential loop.
-    pub fn analyze_file_with_thread(&mut self) {
+    pub fn analyze_file_with_thread(&mut self) -> io::Result<()> {
         let mut current_window = self.get_sequence_window(None);
         while current_window.is_some() || !self.reader().done_reading_file() {
             if let Some(w) = current_window.as_deref() {
-                self.analyze_sequence_window(w, 0);
+                self.analyze_sequence_window(w, 0)?;
             }
             current_window = self.get_sequence_window(current_window);
         }
+        Ok(())
     }
 
     /// The `-t N` replacement for the C++ pthread loop. Gives the output of
@@ -502,7 +504,7 @@ impl Ultra {
     /// back, keeping two windows per worker queued, so the workers never wait
     /// for a whole pool to be applied. Window contents and read ids depend
     /// only on file order, so this does not change the output.
-    fn analyze_file_with_workers(&mut self) {
+    fn analyze_file_with_workers(&mut self) -> io::Result<()> {
         let mut analyzers = std::mem::take(&mut self.analyzers);
         let worker_settings = self.settings.clone();
         let store = self.store_trace_and_sequence;
@@ -528,7 +530,7 @@ impl Ultra {
         let workers = analyzers.len().max(1);
         let queue_target = 2 * workers;
 
-        std::thread::scope(|scope| {
+        let result = std::thread::scope(|scope| {
             for analyzer in analyzers.iter_mut() {
                 let notice = PanicNotice(done_tx.clone());
                 let job_rx = &job_rx;
@@ -600,14 +602,19 @@ impl Ultra {
                     pending.insert(i, (w, r));
                 };
                 self.begin_window(&window);
-                self.finish_window(0, repeats);
+                let written = self.finish_window(0, repeats);
                 self.reader().add_waiting_window(window);
                 next_applied += 1;
+                // Returning drops `job_tx`, which stops the workers once
+                // the queued windows are done, so the scope can join them.
+                written?;
             }
             drop(job_tx);
+            Ok(())
         });
 
         self.analyzers = analyzers;
+        result
     }
 
     /// C++ `Log2PvalForScore`.
@@ -661,24 +668,31 @@ impl Ultra {
         let pthread = self.primary_thread;
         self.primary_thread = -10;
 
-        self.analyze_sequence_window(&seq_window, 0);
+        // With primary_thread at -10 the repeats are not passed on for
+        // output, so nothing is written here.
+        let written = self.analyze_sequence_window(&seq_window, 0);
 
         let repeats = std::mem::take(&mut self.threads[0].repeats);
 
         self.primary_thread = pthread;
 
+        if let Err(e) = written {
+            eprintln!("Error writing output: {e}");
+            return None;
+        }
         Some(repeats)
     }
 
     /// C++ `AnalyzeSequenceWindow` on thread 0 using analyzer `analyzer`.
-    pub fn analyze_sequence_window(&mut self, sequence: &SequenceWindow, analyzer: usize) {
+    /// Returns the error from writing out finished repeats, if that fails.
+    pub fn analyze_sequence_window(&mut self, sequence: &SequenceWindow, analyzer: usize) -> io::Result<()> {
         self.begin_window(sequence);
         let repeats = self.analyzers[analyzer].analyze_window(
             sequence,
             &self.settings,
             self.store_trace_and_sequence,
         );
-        self.finish_window(0, repeats);
+        self.finish_window(0, repeats)
     }
 
     /// The read-ID bookkeeping at the top of C++ `AnalyzeSequenceWindow`.
@@ -693,7 +707,7 @@ impl Ultra {
     /// The end of C++ `AnalyzeSequenceWindow`: hands the window's repeats to
     /// `out_repeats` and writes out what is complete once the buffer is
     /// over `repeat_buffer`.
-    fn finish_window(&mut self, tid: usize, repeats: Vec<Box<RepeatRegion>>) {
+    fn finish_window(&mut self, tid: usize, repeats: Vec<Box<RepeatRegion>>) -> io::Result<()> {
         self.threads[tid].repeats.extend(repeats);
 
         if self.primary_thread == self.threads[tid].id {
@@ -704,7 +718,7 @@ impl Ultra {
             if self.out_repeats.len() as u64 > self.repeat_buffer
                 && !self.settings.disable_streaming_out
             {
-                self.output_repeats(false);
+                self.output_repeats(false)?;
             }
 
             // Always 0 with one logical thread; kept to mirror the C++ round robin.
@@ -713,18 +727,20 @@ impl Ultra {
                 self.primary_thread = (self.primary_thread + 1) % LOGICAL_THREADS;
             }
         }
+        Ok(())
     }
 
     /// C++ `OutputRepeats`: sorts `out_repeats`, then joins and writes every
     /// repeat from windows more than 3 reads back (all of them when
-    /// `flush`, which also ends the writers). Flushes the outputs.
-    pub fn output_repeats(&mut self, flush: bool) {
+    /// `flush`, which also ends the writers). Flushes the outputs. Stops at
+    /// the first write error and returns it.
+    pub fn output_repeats(&mut self, flush: bool) -> io::Result<()> {
         if !flush && self.settings.disable_streaming_out {
-            return;
+            return Ok(());
         }
         // Repeats from windows at least this far on may still be joined
-        // with the next windows' repeats, so they wait.
-        let mut max_read = self.smallest_read_id().saturating_sub(3 * LOGICAL_THREADS as u64);
+        // with the next windows' repeats, so they wait (unless `flush`).
+        let max_read = self.smallest_read_id().saturating_sub(3 * LOGICAL_THREADS as u64);
 
         if flush {
             for t in self.threads.iter_mut() {
@@ -732,16 +748,17 @@ impl Ultra {
                     self.out_repeats.append(&mut t.repeats);
                 }
             }
-            // Everything is written. (The C++ uses 100,000,000 here, which
+            // A flush writes every repeat, so the read-id tests below are
+            // skipped. (The C++ sets max_read to 100,000,000 here, which
             // dropped every repeat from a later window and could leave the
-            // JSON array unclosed.)
-            max_read = u64::MAX;
+            // JSON array unclosed. A u64::MAX marker would drop the repeats
+            // of find_repeats_in_string, whose read id is UNSET_ID.)
         }
 
         self.sort_repeat_regions();
 
         while let Some(back) = self.out_repeats.last() {
-            if back.read_id >= max_read {
+            if !flush && back.read_id >= max_read {
                 break;
             }
 
@@ -749,11 +766,11 @@ impl Ultra {
 
             // Check if we need to correct overlap
             while let Some(back) = self.out_repeats.last() {
-                if back.read_id >= max_read {
+                if !flush && back.read_id >= max_read {
                     // Upstream returns here without ending the writers or
                     // flushing (unreachable when flushing).
                     self.out_repeats.push(r);
-                    return;
+                    return Ok(());
                 }
 
                 // The repeat to join r with: the next one if it overlaps r
@@ -774,10 +791,10 @@ impl Ultra {
                         if c.sequence_id != r.sequence_id || c.sequence_start > r_end {
                             break;
                         }
-                        if c.read_id >= max_read {
+                        if !flush && c.read_id >= max_read {
                             // Not final yet: wait, as for the next repeat.
                             self.out_repeats.push(r);
-                            return;
+                            return Ok(());
                         }
                         if repeats_overlap(&r, c, true) {
                             take = Some(k);
@@ -804,28 +821,25 @@ impl Ultra {
                 && long_enough
                 && r.repeat_length / (r.repeat_period as i64 as u64) >= self.settings.min_units
             {
-                self.output_repeat(&r, false);
+                self.output_repeat(&r, false)?;
             }
         }
 
         if flush {
             for i in 0..self.writers.len() {
-                if let Err(e) = self.writers[i].end_writer(&self.settings, &mut self.outs[i]) {
-                    crate::writers::on_write_error(&e);
-                }
+                self.writers[i].end_writer(&self.settings, &mut self.outs[i])?;
             }
         }
 
         for out in self.outs.iter_mut() {
-            if let Err(e) = out.flush() {
-                crate::writers::on_write_error(&e);
-            }
+            out.flush()?;
         }
+        Ok(())
     }
 
     /// C++ `OutputULTRASettings`: the settings block, to the `.settings`
     /// file (which is then closed) or stdout, unless `hide_settings`.
-    pub fn output_ultra_settings(&mut self) {
+    pub fn output_ultra_settings(&mut self) -> io::Result<()> {
         let text = format!(
             "{{\"Version\": \"{}\", \n\"Parameters\": {{\n{}}}}}\n",
             ULTRA_VERSION_STRING,
@@ -834,25 +848,23 @@ impl Ultra {
         match self.settings_out.take() {
             Some(mut f) => {
                 if !self.settings.hide_settings {
-                    if let Err(e) = f.write_all(text.as_bytes()) {
-                        crate::writers::on_write_error(&e);
-                    }
+                    f.write_all(text.as_bytes())?;
                 }
-                if let Err(e) = f.flush() {
-                    crate::writers::on_write_error(&e);
-                }
+                f.flush()
             }
             None => {
                 if !self.settings.hide_settings {
-                    crate::writers::print_stdout(&text);
+                    io::stdout().lock().write_all(text.as_bytes())?;
                 }
+                Ok(())
             }
         }
     }
 
     /// C++ `OutputRepeat`: adds the repeat to the coverage count, writes it
-    /// unless `suppress_out`, and records it for the mask.
-    pub fn output_repeat(&mut self, r: &RepeatRegion, _is_sub_rep: bool) {
+    /// unless `suppress_out`, and records it for the mask. Returns the first
+    /// writer's error, if any; the repeat is then not recorded for the mask.
+    pub fn output_repeat(&mut self, r: &RepeatRegion, _is_sub_rep: bool) -> io::Result<()> {
         // Coverage is counted per sequence. Upstream 1.2.2 compares the read
         // id with a counter it never updates, so it stops merging overlapping
         // repeats after the first window.
@@ -879,15 +891,14 @@ impl Ultra {
 
         if !self.settings.suppress_out {
             for i in 0..self.writers.len() {
-                if let Err(e) = self.writers[i].write_repeat(&self.settings, r, &mut self.outs[i]) {
-                    crate::writers::on_write_error(&e);
-                }
+                self.writers[i].write_repeat(&self.settings, r, &mut self.outs[i])?;
             }
         }
 
         if self.settings.produce_mask {
             self.store_mask_for_region(r);
         }
+        Ok(())
     }
 
     /// C++ `StoreMaskForRegion`.
@@ -1001,7 +1012,7 @@ mod tests {
                 r.region_score = 100.0;
                 ultra.out_repeats.push(r);
             }
-            ultra.output_repeats(true);
+            ultra.output_repeats(true).unwrap();
             assert_eq!(ultra.coverage(), want, "compat {compat}");
         }
     }
@@ -1036,12 +1047,76 @@ mod tests {
         ultra.threads[0].smallest_read_id = 3_000_000_000;
         // Streaming writes the first; the second waits because the repeat
         // after it is not final yet and might join it.
-        ultra.output_repeats(false);
+        ultra.output_repeats(false).unwrap();
         assert_eq!(ultra.coverage(), 10);
         // The flush writes the rest (the C++ wrote neither: their read ids
         // are not below its 100,000,000 cap).
-        ultra.output_repeats(true);
+        ultra.output_repeats(true).unwrap();
         assert_eq!(ultra.coverage(), 30);
         assert!(ultra.out_repeats.is_empty());
+    }
+
+    /// Counts the repeats and trailers written; fails every write after the
+    /// first `ok` with an error of kind `fail`.
+    struct Counter {
+        repeats: std::sync::Arc<Mutex<(usize, usize)>>,
+        ok: usize,
+        fail: io::ErrorKind,
+    }
+
+    impl RepeatFileWriter for Counter {
+        fn write_repeat(&mut self, _: &Settings, _: &RepeatRegion, _: &mut dyn Write) -> io::Result<()> {
+            let mut n = self.repeats.lock().unwrap();
+            if n.0 == self.ok {
+                return Err(io::Error::new(self.fail, "test sink failed"));
+            }
+            n.0 += 1;
+            Ok(())
+        }
+        fn end_writer(&mut self, _: &Settings, _: &mut dyn Write) -> io::Result<()> {
+            self.repeats.lock().unwrap().1 += 1;
+            Ok(())
+        }
+    }
+
+    fn counted(ok: usize, fail: io::ErrorKind) -> (Ultra, std::sync::Arc<Mutex<(usize, usize)>>) {
+        let mut ultra = Ultra::new(&library_settings());
+        let n = std::sync::Arc::new(Mutex::new((0, 0)));
+        ultra.writers = vec![Box::new(Counter { repeats: n.clone(), ok, fail })];
+        ultra.outs.truncate(1);
+        (ultra, n)
+    }
+
+    const TWO_REPEATS: &str =
+        "aggtaaggtaaggtaaggtaaggtaagcggtataacatacagatctgactactactactactactactactactac";
+
+    /// The repeats of find_repeats_in_string, whose read id is UNSET_ID, are
+    /// written by a flush. A flush used to stop at read id u64::MAX, which is
+    /// UNSET_ID, so it wrote none of them but still ended the writer.
+    #[test]
+    fn a_flush_writes_repeats_from_find_repeats_in_string() {
+        let (mut ultra, n) = counted(usize::MAX, io::ErrorKind::Other);
+        let found = ultra.find_repeats_in_string(TWO_REPEATS).unwrap();
+        assert!(found.iter().all(|r| r.read_id == crate::sequence_window::UNSET_ID));
+        ultra.out_repeats.extend(found);
+        ultra.output_repeats(true).unwrap();
+        assert_eq!(*n.lock().unwrap(), (2, 1));
+        assert!(ultra.out_repeats.is_empty());
+        assert_eq!(ultra.coverage(), 27 + 29);
+    }
+
+    /// A writer's error comes back to the caller, for a closed pipe as for
+    /// any other error. It used to end the process (status 141 or 255).
+    #[test]
+    fn write_errors_are_returned() {
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::Other] {
+            let (mut ultra, n) = counted(1, kind);
+            let found = ultra.find_repeats_in_string(TWO_REPEATS).unwrap();
+            ultra.out_repeats.extend(found);
+            let e = ultra.output_repeats(true).unwrap_err();
+            assert_eq!(e.kind(), kind);
+            // One repeat was written; the writer was not ended.
+            assert_eq!(*n.lock().unwrap(), (1, 0));
+        }
     }
 }

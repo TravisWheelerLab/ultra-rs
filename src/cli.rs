@@ -1560,8 +1560,9 @@ impl Settings {
         s
     }
 
-    pub fn print_memory_usage(&mut self) {
-        crate::writers::print_stdout(&self.memory_usage_string());
+    /// Writes [`memory_usage_string`](Self::memory_usage_string) to stdout.
+    pub fn print_memory_usage(&mut self) -> std::io::Result<()> {
+        std::io::stdout().lock().write_all(self.memory_usage_string().as_bytes())
     }
 
     /// Settings as the JSON fragment written into output files.

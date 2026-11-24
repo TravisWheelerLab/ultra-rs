@@ -153,11 +153,13 @@ fn strip_fraction_zeros(s: &mut String) {
 }
 
 
-/// Ends the program after a failed write to an output. A closed pipe
-/// (`ultra ... | head`) ends it quietly with status 141, as SIGPIPE ends the
-/// C++; any other error (a full disk, say) is reported, with status 255.
-/// The C++ ignored write errors and the port discarded them, so a run
-/// carried on to the end and then panicked printing its summary.
+/// Ends the program after a failed write to an output, for a command-line
+/// program such as `ultra`. A closed pipe (`ultra ... | head`) ends it
+/// quietly with status 141, as SIGPIPE ends the C++; any other error (a full
+/// disk, say) is reported, with status 255. The C++ ignored write errors and
+/// the port discarded them, so a run carried on to the end and then panicked
+/// printing its summary. The library's own methods return write errors
+/// instead of calling this.
 pub fn on_write_error(e: &io::Error) -> ! {
     if e.kind() == io::ErrorKind::BrokenPipe {
         std::process::exit(141);

@@ -203,7 +203,10 @@ pub fn read_ultra_json(path: &str) -> anyhow::Result<Vec<UltraRecord>> {
 
 /// Collects ULTRA's repeats as records instead of writing them: the fields and
 /// numbers of ULTRA's `--json --show_delta` writer (`writers/json.rs`), with
-/// Score and deltas rounded to ULTRA's six decimals.
+/// Score and deltas rounded to ULTRA's six decimals. A record whose
+/// SubRepeats text does not parse is kept without SubRepeats, with a warning
+/// on stderr: the field is optional (Aurora ignores it) and the record's other
+/// fields do not depend on it.
 struct Collect(std::sync::Arc<std::sync::Mutex<Vec<UltraRecord>>>);
 
 impl ultra_repeats::writers::RepeatFileWriter for Collect {
@@ -219,7 +222,14 @@ impl ultra_repeats::writers::RepeatFileWriter for Collect {
         let len = r.repeat_length as usize;
         let sub_repeats = if r.splits.as_ref().is_some_and(|s| s.iter().any(|&x| x > 0)) {
             let txt = JSONFileWriter::sub_repeats_string(r);
-            serde_json::from_slice(&txt).map_err(std::io::Error::other)?
+            serde_json::from_slice(&txt).unwrap_or_else(|e| {
+                eprintln!(
+                    "ultrafast: warning: ULTRA's SubRepeats for {} at {} did not parse ({e}); the call is kept without them",
+                    upto_nul(r.sequence_name.as_bytes()),
+                    r.sequence_start
+                );
+                Vec::new()
+            })
         } else {
             Vec::new()
         };
@@ -242,7 +252,7 @@ impl ultra_repeats::writers::RepeatFileWriter for Collect {
 /// ULTRA's calls at its defaults with maximum period `period` on the FASTA file
 /// `input`: what `ultra -p period -t threads --json --show_delta` would write,
 /// taken from this repository's library in memory (no files are written and
-/// nothing is printed). `upstream_compat` selects the C++-compatible scoring,
+/// nothing is printed but the warning described at `Collect`). `upstream_compat` selects the C++-compatible scoring,
 /// as `ULTRA_UPSTREAM_COMPAT` does for `ultra`.
 pub fn run_ultra(input: &str, period: usize, threads: usize, upstream_compat: bool) -> anyhow::Result<Vec<UltraRecord>> {
     use ultra_repeats::{cli::Settings, ultra::Ultra};
@@ -269,8 +279,9 @@ pub fn run_ultra(input: &str, period: usize, threads: usize, upstream_compat: bo
         let mut u = Ultra::new(&s);
         // the JSON writer would print to stdout; collect instead
         u.writers = vec![Box::new(Collect(got.clone()))];
-        u.analyze_file();
-        u.output_repeats(true);
+        u.analyze_file()
+            .and_then(|()| u.output_repeats(true))
+            .map_err(|e| anyhow::anyhow!("ULTRA on {input}: {e}"))?;
     }
     let out = std::mem::take(&mut *got.lock().expect("collector lock"));
     Ok(out)
@@ -916,5 +927,38 @@ mod tests {
         assert_eq!(phase_to_start(b"TGG".to_vec(), b"GGTGGTGGT"), b"GGT".to_vec());
         assert_eq!(phase_to_start(b"TG".to_vec(), b"gtgtgt"), b"GT".to_vec());
         assert_eq!(phase_to_start(b"ACGT".to_vec(), b"AC"), b"ACGT".to_vec());
+    }
+
+    /// A call whose SubRepeats text is not valid JSON (here a consensus byte
+    /// that is not UTF-8) is collected without SubRepeats. Collect used to
+    /// return an error, on which ULTRA ended the whole process.
+    #[test]
+    fn collect_keeps_a_call_whose_sub_repeats_do_not_parse() {
+        use ultra_repeats::{cli::Settings, repeat::RepeatRegion, ultra::Ultra};
+        let mut s = Settings::new();
+        s.run_without_reader = true;
+        s.window_size = 1000;
+        s.overlap = 0;
+        s.assign_settings();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut u = Ultra::new(&s);
+        u.writers = vec![Box::new(super::Collect(got.clone()))];
+        u.outs.truncate(1);
+        let mut r = Box::new(RepeatRegion::new());
+        r.sequence_name = "chr1".to_string();
+        r.read_id = 0;
+        r.repeat_period = 2;
+        r.repeat_length = 10;
+        r.region_score = 100.0;
+        r.string_consensus = b"AC".to_vec();
+        r.splits = Some(vec![4]);
+        r.consensi = Some(vec![b"A\xff".to_vec(), b"AC".to_vec()]);
+        u.out_repeats.push(r);
+        u.output_repeats(true).unwrap();
+        let got = got.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence_name, "chr1");
+        assert_eq!(got[0].length, 10);
+        assert!(got[0].sub_repeats.is_empty());
     }
 }
