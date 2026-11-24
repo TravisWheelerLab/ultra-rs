@@ -64,7 +64,7 @@ pub fn cleaned_masks(mask: &mut [MRegion]) -> Option<Vec<MRegion>> {
 /// position, anything else is skipped, and `;` comment lines are not
 /// sequence. Each record is masked with its own regions only.
 ///
-/// This departs from upstream 1.2.2 in three places, all upstream bugs:
+/// This departs from upstream 1.2.2 in four places, all upstream bugs:
 /// - Upstream advanced the position only on `ACGTacgt` and `Nn` and treated
 ///   `;` lines as sequence, so masks drifted after any other letter, digit
 ///   or comment line.
@@ -74,6 +74,8 @@ pub fn cleaned_masks(mask: &mut [MRegion]) -> Option<Vec<MRegion>> {
 /// - Upstream did not test a base against the next region when the position
 ///   had passed the end of the current one, which left the first base of a
 ///   region unmasked when `N`s separated it from the previous region.
+/// - Upstream never masked sequence lines before the first header, although
+///   the reader reads them (as record 0) and reports their repeats.
 ///
 /// Output lines always end in `\n`, so a missing final newline is added;
 /// `\r` is passed through.
@@ -96,8 +98,11 @@ pub fn output_masked_fasta<W: Write>(
     let mut seq_id: u64 = 0;
     let mut seq_pos: u64 = 0;
     let mut mask_i: usize = 0;
-    // Merged regions of the current record; empty when it has none.
-    let mut cmask: Vec<MRegion> = Vec::new();
+    // Merged regions of the current record; empty when it has none. Lines
+    // before the first header are record 0 to the reader, which reports
+    // repeats in them, so they are masked with record 0's regions (the C++
+    // starts with none and left them unmasked).
+    let mut cmask: Vec<MRegion> = masks.get_mut(&0).and_then(|regions| cleaned_masks(regions)).unwrap_or_default();
 
     loop {
         // `std::getline`: split on '\n' only; a read error ends the loop

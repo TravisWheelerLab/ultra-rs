@@ -52,8 +52,8 @@ pub struct UThread {
     /// Repeats found in the current window and not yet moved to
     /// `out_repeats` (they stay here for `find_repeats_in_string`).
     pub repeats: Vec<Box<RepeatRegion>>,
-    pub active_read_id: i32,
-    pub smallest_read_id: i32,
+    pub active_read_id: u64,
+    pub smallest_read_id: u64,
 }
 
 /// The per-thread model and splitter of the C++ `uthread`: everything needed
@@ -466,8 +466,11 @@ impl Ultra {
     }
 
     /// C++ `SmallestReadID`.
-    pub fn smallest_read_id(&self) -> i32 {
-        let mut smallest: i32 = 100000000;
+    ///
+    /// The C++ starts from 100,000,000 and keeps read ids in an int, so past
+    /// that many windows nothing more was written; here there is no cap.
+    pub fn smallest_read_id(&self) -> u64 {
+        let mut smallest: u64 = u64::MAX;
         for t in &self.threads {
             if t.smallest_read_id < smallest {
                 smallest = t.smallest_read_id;
@@ -623,11 +626,14 @@ impl Ultra {
     pub fn find_repeats_in_string(&mut self, seq: &str) -> Option<Vec<Box<RepeatRegion>>> {
         let bytes = seq.as_bytes();
         // Make sure that the seq window can fit in the DP matrix
+        // A window of n symbols fills matrix columns 1..=n and then column
+        // n + 1 without emission, so n must be below the matrix length (the
+        // C++ only rejects n above it, and n equal to it ran off the end).
         let matrix_length = self.analyzers[0].model.matrix.length;
-        if bytes.len() > matrix_length {
+        if bytes.len() >= matrix_length {
             eprintln!(
                 "ULTRA model has maximum size {} but string has length {}",
-                matrix_length,
+                matrix_length.saturating_sub(1),
                 bytes.len()
             );
             return None;
@@ -676,8 +682,7 @@ impl Ultra {
     /// The read-ID bookkeeping at the top of C++ `AnalyzeSequenceWindow`.
     fn begin_window(&mut self, sequence: &SequenceWindow) {
         let uth = &mut self.threads[0];
-        // unsigned long narrowed to int.
-        uth.active_read_id = sequence.read_id as i32;
+        uth.active_read_id = sequence.read_id;
         if uth.active_read_id < uth.smallest_read_id {
             uth.smallest_read_id = uth.active_read_id;
         }
@@ -715,10 +720,9 @@ impl Ultra {
         if !flush && self.settings.disable_streaming_out {
             return;
         }
-        let mut max_read_id: i32 = self.smallest_read_id() - (3 * LOGICAL_THREADS);
-        if max_read_id < 0 {
-            max_read_id = 0;
-        }
+        // Repeats from windows at least this far on may still be joined
+        // with the next windows' repeats, so they wait.
+        let mut max_read = self.smallest_read_id().saturating_sub(3 * LOGICAL_THREADS as u64);
 
         if flush {
             for t in self.threads.iter_mut() {
@@ -726,13 +730,13 @@ impl Ultra {
                     self.out_repeats.append(&mut t.repeats);
                 }
             }
-            max_read_id = 100000000;
+            // Everything is written. (The C++ uses 100,000,000 here, which
+            // dropped every repeat from a later window and could leave the
+            // JSON array unclosed.)
+            max_read = u64::MAX;
         }
 
         self.sort_repeat_regions();
-
-        // unsigned long >= int: the int converts to unsigned long.
-        let max_read = max_read_id as i64 as u64;
 
         while let Some(back) = self.out_repeats.last() {
             if back.read_id >= max_read {
@@ -750,19 +754,44 @@ impl Ultra {
                     return;
                 }
 
+                // The repeat to join r with: the next one if it overlaps r
+                // with the same period. Otherwise (not as the C++, which
+                // stops there) the first later one that still starts within
+                // r and has r's period: a repeat of another period found
+                // inside r, such as a microsatellite in a satellite's unit,
+                // sorts between r and its continuation from the next window
+                // and kept the two from being joined, so they were written
+                // as two overlapping records.
+                let mut take = None;
                 if repeats_overlap(&r, back, true) {
-                    let mut joined =
-                        joint_repeat_region(&r, back, self.settings.upstream_compat)
-                            .expect("overlapping repeats join");
-                    if let Some(splits) = joined.splits.as_mut() {
-                        let consensi = joined.consensi.as_mut().expect("consensi is null");
-                        validate_splits(consensi, splits, 0.85);
+                    take = Some(self.out_repeats.len() - 1);
+                } else if !self.settings.upstream_compat {
+                    let r_end = r.sequence_start.wrapping_add(r.repeat_length);
+                    for k in (0..self.out_repeats.len() - 1).rev() {
+                        let c = &self.out_repeats[k];
+                        if c.sequence_id != r.sequence_id || c.sequence_start > r_end {
+                            break;
+                        }
+                        if c.read_id >= max_read {
+                            // Not final yet: wait, as for the next repeat.
+                            self.out_repeats.push(r);
+                            return;
+                        }
+                        if repeats_overlap(&r, c, true) {
+                            take = Some(k);
+                            break;
+                        }
                     }
-                    r = joined;
-                    self.out_repeats.pop();
-                } else {
-                    break;
                 }
+                let Some(k) = take else { break };
+                let mut joined = joint_repeat_region(&r, &self.out_repeats[k], self.settings.upstream_compat)
+                    .expect("overlapping repeats join");
+                if let Some(splits) = joined.splits.as_mut() {
+                    let consensi = joined.consensi.as_mut().expect("consensi is null");
+                    validate_splits(consensi, splits, 0.85);
+                }
+                r = joined;
+                self.out_repeats.remove(k);
             }
 
             r.sort_consensi();
@@ -939,5 +968,44 @@ mod tests {
         let mut ultra = Ultra::new(&s);
         let long = "a".repeat(5000);
         assert!(ultra.find_repeats_in_string(&long).is_none());
+    }
+
+    /// A string as long as the matrix does not fit (the column after the
+    /// last symbol is needed too); one shorter does.
+    #[test]
+    fn find_repeats_in_string_needs_one_spare_column() {
+        let s = library_settings();
+        let mut ultra = Ultra::new(&s);
+        let n = ultra.analyzers[0].model.matrix.length;
+        assert!(ultra.find_repeats_in_string(&"a".repeat(n)).is_none());
+        let found = ultra.find_repeats_in_string(&"a".repeat(n - 1)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].repeat_length as usize, n - 1);
+    }
+
+    /// Repeats from windows numbered 100,000,000 and up are written. The C++
+    /// capped read ids there, so the final flush dropped them.
+    #[test]
+    fn repeats_from_late_windows_are_written() {
+        let mut s = library_settings();
+        s.suppress_out = true;
+        let mut ultra = Ultra::new(&s);
+        for (k, read_id) in [99_999_999u64, 100_000_000, 3_000_000_000].into_iter().enumerate() {
+            let mut r = region(1, 1000 * k as u64, read_id);
+            r.repeat_period = 2;
+            r.repeat_length = 10;
+            r.region_score = 100.0;
+            ultra.out_repeats.push(r);
+        }
+        ultra.threads[0].smallest_read_id = 3_000_000_000;
+        // Streaming writes the first; the second waits because the repeat
+        // after it is not final yet and might join it.
+        ultra.output_repeats(false);
+        assert_eq!(ultra.coverage(), 10);
+        // The flush writes the rest (the C++ wrote neither: their read ids
+        // are not below its 100,000,000 cap).
+        ultra.output_repeats(true);
+        assert_eq!(ultra.coverage(), 30);
+        assert!(ultra.out_repeats.is_empty());
     }
 }
