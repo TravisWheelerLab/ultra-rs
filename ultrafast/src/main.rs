@@ -5,7 +5,7 @@ use std::io::Write;
 /// ultrafast: hybrid tandem-repeat annotation with FasTAN and ULTRA.
 ///
 /// FasTAN finds tandem arrays of any period; ULTRA runs in-process alongside it
-/// at a short maximum period (-p, default 20). The result is written as ULTRA's
+/// at a short maximum period (-p, default 50). The result is written as ULTRA's
 /// JSON (the fields of `ultra --json --show_delta`, Start 0-based), e.g. for
 /// RepeatMasker's Aurora (-U). SequenceName is the first word of the header.
 ///
@@ -30,7 +30,7 @@ struct Args {
     #[arg(short = 'o', long, value_name = "FILE")]
     out: Option<String>,
     /// ULTRA's maximum period; 0 = don't run ULTRA (FasTAN only)
-    #[arg(short = 'p', long, value_name = "PERIOD", default_value_t = 20, conflicts_with = "filler")]
+    #[arg(short = 'p', long, value_name = "PERIOD", default_value_t = 50, conflicts_with = "filler")]
     ultra_period: usize,
     /// Threads in total (0 = all cores), split between ULTRA and FasTAN, which run at
     /// the same time; with 1 they run one after the other
@@ -94,6 +94,10 @@ struct Args {
     /// Minimum ULTRA score for a short-period call (default: keep all, as ULTRA does)
     #[arg(long, default_value_t = f64::NEG_INFINITY, allow_negative_numbers = true, help_heading = "Merging")]
     filler_min_score: f64,
+    /// Don't join ULTRA calls of one period that lie less than a unit apart and have
+    /// the same unit (ULTRA reports some long arrays in such pieces)
+    #[arg(long, help_heading = "Merging")]
+    no_join: bool,
     /// Where calls overlap, keep the FasTAN call instead: ULTRA calls covered more
     /// than half by FasTAN calls are dropped
     #[arg(long, help_heading = "Merging")]
@@ -174,6 +178,7 @@ fn main() -> Result<()> {
         filler: a.filler.as_deref().map(ultrafast::read_ultra_json).transpose()?,
         filler_min_score: a.filler_min_score,
         prefer_fastan: a.prefer_fastan,
+        join_ultra: !a.no_join,
         revote_filler: a.revote_filler,
         rescore_filler: a.rescore_filler,
         rescore_only: a.rescore_only,

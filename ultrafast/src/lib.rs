@@ -558,6 +558,127 @@ fn split_filler(array: &[u8], parts: &[(usize, Vec<u8>)], unit: &[u8], o: &Optio
     if merged.len() < 2 { Vec::new() } else { merged }
 }
 
+/// Fewest mismatches between `a` and any rotation of `b` (equal lengths).
+fn cyclic_mismatches(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len();
+    (0..n).map(|r| (0..n).filter(|&i| a[i] != b[(i + r) % n]).count()).min().unwrap_or(0)
+}
+
+/// A gap between two pieces may be this many units long; the bridging cost decides
+/// within that.
+const JOIN_MAX_GAP_UNITS: usize = 2;
+/// Most a join may cost: see [`bridge_cost`]. On simulated arrays 90% of the breaks
+/// ULTRA leaves inside one array cost 20 or less; on nine genomes most candidate joins
+/// at periods above 30 cost over 60.
+const JOIN_MAX_COST: i64 = 20;
+
+/// What it costs to read the gap between two calls as part of one array: the
+/// wraparound alignment score (matches +2, mismatches -2, indels -5 a base) of the end
+/// of the first call and of the start of the second, each aligned to `unit` on its own,
+/// minus the score of the two with the gap between them aligned as one stretch. Up to
+/// five units (at least 60 bases) of each call are used. A gap that is a diverged copy
+/// in phase costs little or nothing; unrelated sequence costs about a point a base, and
+/// a second piece out of phase with the first costs its indels.
+fn bridge_cost(seq: &[u8], a_start: usize, a_end: usize, b_start: usize, b_end: usize, unit: &[u8]) -> i64 {
+    use ultra_repeats::wrap_align::{align_bytes, ULTRA_SCORES};
+    let w = (5 * unit.len()).max(60);
+    let t0 = a_end.saturating_sub(w).max(a_start);
+    let h1 = (b_start + w).min(b_end);
+    let s = |x: &[u8]| align_bytes(x, unit, ULTRA_SCORES).score;
+    s(&seq[t0..a_end]) + s(&seq[b_start..h1]) - s(&seq[t0..h1])
+}
+
+/// Join filler calls that are pieces of one array. ULTRA's model sometimes leaves a
+/// repeat at an indel or a cluster of mutations and re-enters it a few bases on, so a
+/// long array is reported as several calls of the same period with gaps shorter than
+/// a unit. Two calls on one sequence are joined when they have the same period, their
+/// units differ in at most a tenth of their positions at the best rotation, the second
+/// starts after the first ends and no more than two units on, and reading the gap as
+/// part of the array costs no more than `JOIN_MAX_COST` (see [`bridge_cost`]).
+/// Calls of other periods lying in between don't prevent a join. The joined call keeps
+/// the longer piece's unit, has the pieces' units as SubRepeats where they differ, and
+/// carries no deltas, so it is scored again over its whole span.
+/// Returns the calls in the order given, joined ones at the place of their first piece.
+pub fn join_filler(recs: &[Record], filler: &[UltraRecord]) -> Vec<UltraRecord> {
+    let idx: std::collections::HashMap<&str, usize> = recs.iter().enumerate().map(|(i, r)| (r.name.as_str(), i)).collect();
+    let name = |f: &UltraRecord| f.sequence_name.split_whitespace().next().unwrap_or("").to_string();
+    let mut order: Vec<usize> = (0..filler.len()).collect();
+    order.sort_by(|&a, &b| (name(&filler[a]), filler[a].start, filler[a].length).cmp(&(name(&filler[b]), filler[b].start, filler[b].length)));
+    let mut out: Vec<Option<UltraRecord>> = filler.iter().cloned().map(Some).collect();
+    // (sequence, period) -> index in `out` of the last call of that period
+    let mut open: std::collections::HashMap<(String, usize), usize> = std::collections::HashMap::new();
+    let debug = std::env::var_os("ULTRAFAST_JOIN_DEBUG").is_some();
+    let max_cost = std::env::var("ULTRAFAST_JOIN_COST").ok().and_then(|v| v.parse().ok()).unwrap_or(JOIN_MAX_COST);
+    for i in order {
+        let f = filler[i].clone();
+        let key = (name(&f), f.period);
+        let join = open.get(&key).copied().filter(|&j| {
+            let a = out[j].as_ref().expect("open call");
+            let end = a.start + a.length;
+            let (ua, ub) = (a.consensus.as_bytes(), f.consensus.as_bytes());
+            if !(f.period >= 1
+                && f.start >= end
+                && f.start - end <= JOIN_MAX_GAP_UNITS * f.period
+                && ua.len() == f.period
+                && ub.len() == f.period
+                && 10 * cyclic_mismatches(ua, ub) <= f.period)
+            {
+                return false;
+            }
+            let Some(seq) = idx.get(key.0.as_str()).map(|&si| recs[si].seq.as_slice()) else { return false };
+            if f.start + f.length > seq.len() {
+                return false;
+            }
+            let unit = if a.length >= f.length { ua } else { ub };
+            let cost = bridge_cost(seq, a.start, end, f.start, f.start + f.length, unit);
+            if debug {
+                eprintln!("joincand\t{}\t{}\t{}\t{}\t{}\t{}", key.0, end, f.period, f.start - end, cost, cyclic_mismatches(ua, ub));
+            }
+            cost <= max_cost
+        });
+        let Some(j) = join else {
+            open.insert(key, i);
+            continue;
+        };
+        let a = out[j].take().expect("open call");
+        out[i] = None;
+        let off = f.start - a.start;
+        let parts_of = |r: &UltraRecord, o: usize| -> Vec<SubRepeat> {
+            if r.sub_repeats.is_empty() {
+                vec![SubRepeat { start: o, consensus: r.consensus.clone() }]
+            } else {
+                r.sub_repeats.iter().map(|x| SubRepeat { start: o + x.start, consensus: x.consensus.clone() }).collect()
+            }
+        };
+        let mut parts = parts_of(&a, 0);
+        for x in parts_of(&f, off) {
+            if !parts.last().is_some_and(|l| consensus_cyclic_eq(l.consensus.as_bytes(), x.consensus.as_bytes())) {
+                parts.push(x);
+            }
+        }
+        // the longer piece's unit, in the phase of the joined call's first copy
+        let consensus = if a.length >= f.length {
+            a.consensus.clone()
+        } else {
+            match idx.get(key.0.as_str()) {
+                Some(&si) if a.start + f.period <= recs[si].seq.len() => {
+                    String::from_utf8_lossy(&phase_to_start(f.consensus.as_bytes().to_vec(), &recs[si].seq[a.start..])).into_owned()
+                }
+                _ => a.consensus.clone(),
+            }
+        };
+        out[j] = Some(UltraRecord {
+            length: f.start + f.length - a.start,
+            score: a.score + f.score,
+            consensus,
+            position_score_deltas: Vec::new(),
+            sub_repeats: if parts.len() < 2 { Vec::new() } else { parts },
+            ..a
+        });
+    }
+    out.into_iter().flatten().collect()
+}
+
 fn consensus_cyclic_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && (a.is_empty() || (0..a.len()).any(|r| a[r..].iter().chain(&a[..r]).eq(b.iter())))
 }
@@ -572,7 +693,14 @@ fn consensus_cyclic_eq(a: &[u8], b: &[u8]) -> bool {
 /// Records are sorted by sequence (input order) and start.
 pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], merge_opt: &Merge,
                      model: &DeltaModel, max_cells: usize) -> anyhow::Result<Merged> {
-    let Merge { filler_min, keep_filler_deltas, prefer_filler, filler_cap, filler_cons, filler_split } = *merge_opt;
+    let Merge { filler_min, keep_filler_deltas, prefer_filler, filler_cap, filler_cons, filler_split, filler_join } = *merge_opt;
+    let joined: Vec<UltraRecord>;
+    let filler: &[UltraRecord] = if filler_join {
+        joined = join_filler(recs, filler);
+        &joined
+    } else {
+        filler
+    };
     let gcs: Vec<f64> = recs.par_iter().map(|r| gc_pct(&r.seq)).collect();
     // a record without sequence gets no calls, and may share its name with one that has
     let idx: std::collections::HashMap<&str, usize> =
@@ -802,6 +930,8 @@ pub struct Merge<'a> {
     /// `cons`), keeping the filler's units elsewhere; see `split_filler`. Not used for
     /// calls that `filler_cons` re-votes, which are split as they are re-voted.
     pub filler_split: Option<&'a Options>,
+    /// Join filler calls that are pieces of one array first; see [`join_filler`].
+    pub filler_join: bool,
 }
 
 /// Result of `to_ultra_json`.
@@ -829,6 +959,9 @@ pub struct HybridOptions {
     pub filler: Option<Vec<UltraRecord>>,
     /// Minimum ULTRA score for a short-period call.
     pub filler_min_score: f64,
+    /// Join ULTRA calls of one period that lie less than a unit apart and have the
+    /// same unit (pieces of one array); see [`join_filler`].
+    pub join_ultra: bool,
     /// Where calls overlap, keep FasTAN's (default: keep ULTRA's).
     pub prefer_fastan: bool,
     /// Re-vote ULTRA's units with the TRF-style caller, as FasTAN's are.
@@ -849,11 +982,12 @@ pub struct HybridOptions {
 impl Default for HybridOptions {
     fn default() -> Self {
         HybridOptions {
-            ultra_period: 20,
+            ultra_period: 50,
             threads: 0,
             fastan: Options { consensus: true, ..Default::default() },
             filler: None,
             filler_min_score: f64::NEG_INFINITY,
+            join_ultra: true,
             prefer_fastan: false,
             revote_filler: false,
             rescore_filler: false,
@@ -1022,6 +1156,7 @@ fn hybrid_in_pool(input: &str, opt: &HybridOptions, ultra_threads: usize) -> any
         filler_cap,
         filler_cons: opt.revote_filler.then_some(&fo),
         filler_split: fo.split.is_some().then_some(&fo),
+        filler_join: opt.join_ultra,
     };
     let m = to_ultra_json(&seqs, &arrays, filler, &merge_opt, &opt.delta_model, fo.cons.max_cells)?;
     let mut repeats = m.records;
@@ -1111,5 +1246,43 @@ mod tests {
         assert_eq!(got[0].sequence_name, "chr1");
         assert_eq!(got[0].length, 10);
         assert!(got[0].sub_repeats.is_empty());
+    }
+
+    #[test]
+    fn join_filler_joins_pieces_of_one_array() {
+        use super::{join_filler, Record, UltraRecord};
+        let unit = b"ACGTTGCAAGCTTAGGCATC"; // period 20
+        let call = |start: usize, length: usize| UltraRecord {
+            sequence_name: "s".into(),
+            start,
+            length,
+            period: 20,
+            score: 100.0,
+            consensus: String::from_utf8_lossy(unit).into_owned(),
+            position_score_deltas: vec![1.0; length],
+            matrix: None,
+            sub_repeats: Vec::new(),
+        };
+        // 10 copies, one copy with three substitutions that ULTRA left out, 10 copies
+        let mut seq = unit.repeat(10);
+        seq.extend(b"ACGATGCTAGCTTAGGGATC");
+        seq.extend(unit.repeat(10));
+        let recs = vec![Record { name: "s".into(), seq: seq.clone() }];
+        let j = join_filler(&recs, &[call(0, 200), call(220, 200)]);
+        assert_eq!(j.len(), 1);
+        assert_eq!((j[0].start, j[0].length), (0, 420));
+        assert!(j[0].position_score_deltas.is_empty() && j[0].sub_repeats.is_empty());
+        // the same two calls with unrelated sequence between them stay apart
+        let mut seq = unit.repeat(10);
+        seq.extend(b"GGGGGGGGGGCCCCCCCCCCGGGGGGGGGGCCCCCCCC");
+        seq.extend(unit.repeat(10));
+        let recs = vec![Record { name: "s".into(), seq }];
+        assert_eq!(join_filler(&recs, &[call(0, 200), call(238, 200)]).len(), 2);
+        // and so do calls more than two units apart, or of different periods
+        let recs = vec![Record { name: "s".into(), seq: unit.repeat(40) }];
+        assert_eq!(join_filler(&recs, &[call(0, 200), call(260, 200)]).len(), 2);
+        let mut other = call(200, 200);
+        other.period = 10;
+        assert_eq!(join_filler(&recs, &[call(0, 200), other]).len(), 2);
     }
 }

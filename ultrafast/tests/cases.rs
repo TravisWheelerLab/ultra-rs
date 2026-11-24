@@ -131,7 +131,8 @@ fn substituted(state: &mut u64, s: &[u8], pct: u64) -> Vec<u8> {
 fn microsatellite_inside_part_of_a_satellite_is_kept() {
     // a period-40 satellite with substitutions that holds 300 bp of (AGAT)n: FasTAN calls
     // the whole span at period 40 and scores badly on the AGAT bases, so ULTRA's AGAT call
-    // must stay
+    // must stay. (-p 20: at the default -p 50 ULTRA calls the satellite itself, as one
+    // call on each side of the AGAT run, which is checked below.)
     let d = dir("micro_in_sat");
     let mut st = 5u64;
     let unit = bases(&mut st, 40);
@@ -146,15 +147,20 @@ fn microsatellite_inside_part_of_a_satellite_is_kept() {
     s.extend(bases(&mut st, 2000));
     let fa = d.join("in.fa");
     write_fa(&fa, &[("x", s)], "\n");
-    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    let spans: Vec<_> = records(&["-t", "2", "-p", "20"], &fa).iter().map(span).collect();
     assert!(spans.iter().any(|&(s, e, p)| p == 4 && s <= 4005 && e >= 4290), "{spans:?}");
     assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 2100 && e >= 5200), "{spans:?}");
+    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    assert!(spans.iter().any(|&(s, e, p)| p == 4 && s <= 4005 && e >= 4290), "{spans:?}");
+    assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 2100 && e >= 3990), "{spans:?}");
+    assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 4310 && e >= 5200), "{spans:?}");
 }
 
 #[test]
 fn divergent_array_is_not_reported_at_twice_its_period() {
     // 32 copies of a 12 bp unit with 15% substitutions (simulated). FasTAN calls it at
-    // period 24, which scores a fraction of a bit below ULTRA's period-12 call; ULTRA's stays
+    // period 24, which scores a fraction of a bit below ULTRA's period-12 call; ULTRA's stays.
+    // (-p 20, so that ULTRA cannot report period 24 itself: at higher -p it does.)
     let d = dir("divergent");
     let s = b"TGGGGCTTATATTTGCAGGGAGCGGCTTTTCCATTCACTCGAATCTGATAATCGGGGACACGCGTAGACGATGCTAGTGGCTCCGTGCTAC\
 CCCCCAGGTTAAACTGTACCATAAACGGTACAATATACTATACCATAAACTGTACCATAAGCTGTACCATAGTCTGTACCATAAACTGTATCACATACTG\
@@ -165,7 +171,7 @@ CCGCCTGGGACTAAATTCACTGCAGACCCCTAGGGGGCACTGATTAGAAATGATTATGGCCGCAGACCTAACAAAAATGC
         .to_vec();
     let fa = d.join("in.fa");
     write_fa(&fa, &[("d", s)], "\n");
-    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    let spans: Vec<_> = records(&["-t", "2", "-p", "20"], &fa).iter().map(span).collect();
     assert!(spans.iter().any(|&(s, e, p)| p == 12 && s <= 110 && e >= 470), "{spans:?}");
     assert!(!spans.iter().any(|&(_, _, p)| p == 24), "{spans:?}");
     // FasTAN alone does call it at period 24

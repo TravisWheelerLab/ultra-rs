@@ -5,7 +5,7 @@ A hybrid tandem-repeat annotator built on this repository's ULTRA library. It wr
 - **FasTAN** (a Rust port of Gene Myers' tandem-array finder, `src/fastan.rs`) finds arrays of any period
   (up to about 30 kb) quickly. Each array gets a TRF-style iterative consensus unit (`src/consensus.rs`)
   and is split where the unit changes.
-- **ULTRA** runs in-process at a short maximum period (`-p`, default 20), alongside FasTAN.
+- **ULTRA** runs in-process at a short maximum period (`-p`, default 50), alongside FasTAN.
   At short periods its sensitivity matters most and its cost is lowest.
 - The two call sets are merged (see [Merging](#merging)).
 
