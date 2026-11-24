@@ -336,10 +336,39 @@ impl UModel {
         _can_be_repetitive: Option<&[bool]>,
     ) {
         let seq = sequence.seq();
-        if self.fast_columns && self.column_is_steady(seq.len(), nuc_index) {
-            self.calculate_steady_column(seq, nuc_index as usize);
-            return;
+        let max_order = self.matrix.max_period.saturating_sub(1);
+        if self.fast_columns && max_order > 0 {
+            if self.column_is_steady(seq.len(), nuc_index) {
+                self.calculate_steady_column(seq, nuc_index as usize, max_order);
+                self.matrix.move_matrix_forward();
+                return;
+            }
+            // A column still in its warm-up: the low orders may already be
+            // steady. Fill them the fast way and the rest cell by cell, in
+            // row order, as the general path would.
+            let n = self.steady_orders(seq.len(), nuc_index);
+            if n > 0 {
+                self.calculate_steady_column(seq, nuc_index as usize, n);
+                let start_row = self.matrix.match_rows[n + 1];
+                self.calculate_general_rows(seq, nuc_index, start_row);
+                let cur = self.matrix.current_column_index;
+                self.matrix.record_history(cur);
+                self.matrix.move_matrix_forward();
+                return;
+            }
         }
+        self.calculate_general_rows(seq, nuc_index, 0);
+        let cur = self.matrix.current_column_index;
+        self.matrix.record_history(cur);
+        self.matrix.move_matrix_forward();
+    }
+
+    /// The general path of
+    /// [`calculate_current_column`](Self::calculate_current_column) for rows
+    /// `start_row..` of the current column. Rows before `start_row` must
+    /// already hold their scores for this column. Does not record the
+    /// column's history or move the matrix forward.
+    fn calculate_general_rows(&mut self, seq: &[Symbol], nuc_index: i32, start_row: usize) {
         let mscore = &self.mscore;
         let bscore = &self.bscore;
         let tscore = &self.tscore;
@@ -367,7 +396,7 @@ impl UModel {
         let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, hrows, m.length);
         let p: &[f32] = cols.p;
 
-        for (row, &d) in desc.iter().enumerate() {
+        for (row, &d) in desc.iter().enumerate().skip(start_row) {
             match d.cell_type {
                 CT_BACKGROUND => {
                     cols.c[row] = p[row] + tscore[bg][bg];
@@ -527,8 +556,29 @@ impl UModel {
             }
         }
 
-        m.record_history(cur);
-        m.move_matrix_forward();
+    }
+
+    /// How many orders, from order 1 up, have every cell past its warm-up in
+    /// the current column (see [`SteadyState::by_order`]). The bounds grow
+    /// with the order, so these orders form a prefix.
+    ///
+    /// [`SteadyState::by_order`]: crate::umatrix::SteadyState::by_order
+    fn steady_orders(&self, seq_len: usize, nuc_index: i32) -> usize {
+        let m = &self.matrix;
+        let prev = m.previous_column_index as i64;
+        let cur = m.current_column_index as i64;
+        let length = m.length as i64;
+        let i = nuc_index as i64;
+        if i >= seq_len as i64 {
+            return 0;
+        }
+        let orders = &m.steady.by_order[1..];
+        orders.partition_point(|b| {
+            prev > b.min_previous_column
+                && cur >= b.max_lookback
+                && b.max_lookback < length
+                && i >= b.max_sequence_back
+        })
     }
 
     /// Whether every cell of the current column is past its warm-up (see
@@ -538,7 +588,7 @@ impl UModel {
     #[inline(always)]
     fn column_is_steady(&self, seq_len: usize, nuc_index: i32) -> bool {
         let m = &self.matrix;
-        let st = m.steady;
+        let st = &m.steady;
         (m.previous_column_index as i64) > st.min_previous_column
             && (m.current_column_index as i64) >= st.max_lookback
             && (st.max_lookback as u64) < m.length as u64
@@ -553,7 +603,13 @@ impl UModel {
     /// directly. Every cell does the same floating-point operations in the
     /// same order as the general path, and the max into a parent row keeps
     /// the first strictly greater score, so the result is identical.
-    fn calculate_steady_column(&mut self, seq: &[Symbol], i: usize) {
+    ///
+    /// Fills the background row and orders `1..=n_orders`, which must all be
+    /// steady (`n_orders` is at most `max_period - 1`). With every order this
+    /// is the whole column; with fewer, the caller fills the remaining rows
+    /// with [`calculate_general_rows`](Self::calculate_general_rows) and
+    /// records the history. Does not move the matrix forward.
+    fn calculate_steady_column(&mut self, seq: &[Symbol], i: usize, n_orders: usize) {
         let mscore = &self.mscore;
         let bscore = &self.bscore;
         let tscore = &self.tscore;
@@ -610,9 +666,10 @@ impl UModel {
         c[0] = p[0] + t_bg_bg;
         ct[0] = 0;
 
+        debug_assert!(n_orders < max_period);
         let mut r = 1usize;
         let mut o = 1usize;
-        while o < max_period {
+        while o <= n_orders {
             let order = o as f32;
 
             // The match row: first its exit to the background row.
@@ -694,10 +751,8 @@ impl UModel {
             r += 1 + n_ins + n_del;
             o += 1;
         }
-        debug_assert_eq!(r, cpc);
+        debug_assert!(n_orders + 1 < max_period || r == cpc);
         hist_cur[0] = c[0];
-
-        m.move_matrix_forward();
     }
 
     /// Like [`calculate_current_column`](Self::calculate_current_column) with

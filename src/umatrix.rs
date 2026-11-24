@@ -124,13 +124,25 @@ pub struct UMatrix {
 /// Bounds past which no cell of a column takes a warm-up branch, every
 /// look-back column lies at or before the current one without wrapping, and
 /// every sequence index is in range. Derived from the cell layout.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SteadyState {
     /// The previous column index must be greater than this.
     pub min_previous_column: i64,
     /// The largest `d` any cell passes to `PreviousScore`.
     pub max_lookback: i64,
     /// The largest distance any cell reads back from the current symbol.
+    pub max_sequence_back: i64,
+    /// The same three bounds for the cells of orders `1..=o` only, entry `o`
+    /// (entry 0 is all zeros). Each is non-decreasing in `o`, so in a column
+    /// that is not yet steady the orders that are form a prefix.
+    pub by_order: Vec<OrderBounds>,
+}
+
+/// [`SteadyState`]'s bounds for the cells of a prefix of orders.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OrderBounds {
+    pub min_previous_column: i64,
+    pub max_lookback: i64,
     pub max_sequence_back: i64,
 }
 
@@ -142,6 +154,8 @@ impl SteadyState {
     /// `matind > 3o`, looks back `o + 1` and reads `2o` back.
     pub fn for_cells(desc: &[Cell]) -> Self {
         let mut s = SteadyState::default();
+        let max_order = desc.iter().map(|d| d.order.max(0) as usize).max().unwrap_or(0);
+        let mut by_order = vec![OrderBounds::default(); max_order + 1];
         for d in desc {
             let (o, k) = (d.order as i64, d.indel_number as i64);
             let (min_prev, lookback, seq_back) = match d.cell_type {
@@ -153,7 +167,20 @@ impl SteadyState {
             s.min_previous_column = s.min_previous_column.max(min_prev);
             s.max_lookback = s.max_lookback.max(lookback);
             s.max_sequence_back = s.max_sequence_back.max(seq_back);
+            let b = &mut by_order[d.order.max(0) as usize];
+            b.min_previous_column = b.min_previous_column.max(min_prev);
+            b.max_lookback = b.max_lookback.max(lookback);
+            b.max_sequence_back = b.max_sequence_back.max(seq_back);
         }
+        // Prefix maxima: entry o covers orders 1..=o.
+        for o in 1..by_order.len() {
+            let p = by_order[o - 1];
+            let b = &mut by_order[o];
+            b.min_previous_column = b.min_previous_column.max(p.min_previous_column);
+            b.max_lookback = b.max_lookback.max(p.max_lookback);
+            b.max_sequence_back = b.max_sequence_back.max(p.max_sequence_back);
+        }
+        s.by_order = by_order;
         s
     }
 }
