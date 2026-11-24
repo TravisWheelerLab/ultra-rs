@@ -338,6 +338,7 @@ impl Ultra {
             model.calculate_scores();
 
             let mut splitter = SplitWindow::new();
+            splitter.upstream_compat = settings.upstream_compat;
             if !settings.no_split {
                 splitter.allocate_split_window(4, settings.max_period.wrapping_add(1) as i32);
             } else {
@@ -751,7 +752,8 @@ impl Ultra {
 
                 if repeats_overlap(&r, back, true) {
                     let mut joined =
-                        joint_repeat_region(&r, back).expect("overlapping repeats join");
+                        joint_repeat_region(&r, back, self.settings.upstream_compat)
+                            .expect("overlapping repeats join");
                     if let Some(splits) = joined.splits.as_mut() {
                         let consensi = joined.consensi.as_mut().expect("consensi is null");
                         validate_splits(consensi, splits, 0.85);

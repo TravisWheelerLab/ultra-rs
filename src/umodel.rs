@@ -850,7 +850,14 @@ impl UModel {
                         score = (score as f64 + 0.0) as f32;
 
                         score += tscore[ma][ins];
-                        score += tscore[ins][ins] * (d.indel_number - 1) as f32;
+                        // The extensions of an insertion of more than one
+                        // base. Skipped for one base: adding t * 0 changes
+                        // nothing for a finite t, and with --ii 0 (t = -inf)
+                        // it would make the score NaN, so that even
+                        // single-base insertions could never be taken.
+                        if d.indel_number > 1 {
+                            score += tscore[ins][ins] * (d.indel_number - 1) as f32;
+                        }
                         // The `order` bases after the indel; see
                         // `indel_window_cost`.
                         score = (score as f64 + window_cost * (order as f32) as f64) as f32;
@@ -904,7 +911,10 @@ impl UModel {
                         let mut score = cols.previous_score(parent_index, order);
 
                         score += tscore[ma][del];
-                        score += tscore[del][del] * (indel_num - 1) as f32;
+                        // As for insertions (--dd 0).
+                        if indel_num > 1 {
+                            score += tscore[del][del] * (indel_num - 1) as f32;
+                        }
                         // The `order` bases after the indel; see
                         // `indel_window_cost`.
                         score = (score as f64 + window_cost * (order as f32) as f64) as f32;
@@ -1436,7 +1446,14 @@ impl UModel {
                         score = (score as f64 + 0.0) as f32;
 
                         score += tscore[ma][ins];
-                        score += tscore[ins][ins] * (d.indel_number - 1) as f32;
+                        // The extensions of an insertion of more than one
+                        // base. Skipped for one base: adding t * 0 changes
+                        // nothing for a finite t, and with --ii 0 (t = -inf)
+                        // it would make the score NaN, so that even
+                        // single-base insertions could never be taken.
+                        if d.indel_number > 1 {
+                            score += tscore[ins][ins] * (d.indel_number - 1) as f32;
+                        }
                         // The `order` bases after the indel; see
                         // `indel_window_cost`.
                         score = (score as f64 + window_cost * (order as f32) as f64) as f32;
@@ -1469,7 +1486,10 @@ impl UModel {
                         let mut score = cols.previous_score(parent_index, order);
 
                         score += tscore[ma][del];
-                        score += tscore[del][del] * (indel_num - 1) as f32;
+                        // As for insertions (--dd 0).
+                        if indel_num > 1 {
+                            score += tscore[del][del] * (indel_num - 1) as f32;
+                        }
                         // The `order` bases after the indel; see
                         // `indel_window_cost`.
                         score = (score as f64 + window_cost * (order as f32) as f64) as f32;
@@ -1630,6 +1650,40 @@ mod tests {
         }
         out.truncate(len);
         String::from_utf8(out).unwrap()
+    }
+
+    /// --ii 0 / --dd 0 forbid extending an insertion or deletion, not making
+    /// one: no score is NaN, and the traceback is that of a tiny positive
+    /// probability (where an extension is never worth taking either).
+    #[test]
+    fn zero_extension_probabilities_allow_single_indels() {
+        let s = mixed_sequence(800, 13, 21);
+        let mlen = s.len() as i32 + 3;
+        let run = |p: f32, fast: bool| {
+            let mut m = ultra_model_with(14, 4, 4, mlen, false, false, false);
+            m.tp_consecutive_insertion = p;
+            m.tp_consecutive_deletion = p;
+            m.calculate_scores();
+            m.fast_columns = fast;
+            let mut w = SequenceWindow::new(mlen as usize, 0);
+            w.length = s.len();
+            for (i, c) in s.bytes().enumerate() {
+                w.seq_mem[i] = symbol_for_char(c);
+            }
+            m.matrix.restart_matrix();
+            for i in 0..s.len() as i32 {
+                m.calculate_current_column(&w, i, None);
+                let col = m.matrix.previous_column_index;
+                assert!(m.matrix.score_column(col).iter().all(|v| !v.is_nan()), "NaN in column {col}");
+            }
+            m.calculate_current_column_without_emission(None);
+            let pc = m.matrix.previous_column_index;
+            m.matrix.calculate_traceback(pc);
+            m.matrix.traceback[..s.len() + 2].to_vec()
+        };
+        for fast in [false, true] {
+            assert_eq!(run(0.0, fast), run(1e-30, fast));
+        }
     }
 
     /// A negative indel count builds no indel cells, so every path must give

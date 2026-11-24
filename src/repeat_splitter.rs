@@ -50,6 +50,11 @@ pub struct SplitWindow {
 
     pub place: i32,
     pub length: i32,
+
+    /// Give a unit position with no A, C, G or T base in the segment the
+    /// symbol T, as the C++ does (its share is 0.25 / 0, so the first symbol
+    /// wins), instead of `'*'`.
+    pub upstream_compat: bool,
 }
 
 /// `SymbolForChar(c) - 1`: 0..3 for `TCAG`, -1 for anything else.
@@ -449,6 +454,11 @@ impl SplitWindow {
         self.fill_logo_for_region(r, start, end);
 
         for i in 0..r.repeat_period {
+            // Only N (or other non-ACGT) bases at this unit position: it
+            // cannot be resolved, which the consensus shows as '*'.
+            if self.logo_totals[i as usize] == 0.0 && !self.upstream_compat {
+                continue;
+            }
             let mut best_val = consensus_threshold;
             for a in 0..self.alphabet_size {
                 let mass = self.logo_mat[self.idx(a, i)] / self.logo_totals[i as usize];
@@ -537,6 +547,24 @@ mod tests {
     //! (`RepeatSplitter.cpp.o`). End-to-end splitting is pinned against the
     //! C++ in `repeat::tests`.
     use super::*;
+
+    /// A unit position that only N bases fill cannot be resolved: '*', not
+    /// the T the C++ gives it (0.25 / 0 beats the threshold).
+    #[test]
+    fn n_only_unit_positions_are_unresolved() {
+        let mut r = RepeatRegion::new();
+        r.repeat_period = 2;
+        r.repeat_length = 12;
+        r.sequence = b"ANANANANANAN".to_vec();
+        r.logo_numbers = Some((0..12).map(|i| i % 2).collect());
+        for compat in [false, true] {
+            let mut w = SplitWindow::new();
+            w.upstream_compat = compat;
+            w.allocate_split_window(4, 3);
+            let c = w.consensus_for_region(&r, 0, 12, 0.65);
+            assert_eq!(c, if compat { b"AT".to_vec() } else { b"A*".to_vec() });
+        }
+    }
 
     #[test]
     fn consensus_similarity_matches_cpp() {

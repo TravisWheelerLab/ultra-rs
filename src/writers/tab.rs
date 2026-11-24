@@ -123,7 +123,19 @@ impl RepeatFileWriter for TabFileWriter {
                         }
                     }
 
-                    if settings.max_consensus_period >= 0 {
+                    let hidden = settings.max_consensus_period < repeat.repeat_period;
+                    if settings.max_consensus_period >= 0 && hidden && !settings.upstream_compat {
+                        // One '.' per subrepeat listed in SubrepeatStarts.
+                        // The C++ writes one per consensus, including those
+                        // of splits that were removed, so the column could
+                        // have more entries than #Subrepeats.
+                        for i in 0..=number_of_valid_splits {
+                            if i > 0 {
+                                consensi.push(b',');
+                            }
+                            consensi.push(b'.');
+                        }
+                    } else if settings.max_consensus_period >= 0 {
                         let rc = repeat.consensi.as_ref().expect("consensi is null");
                         for i in 0..rc.len() {
                             let mut con: &[u8] = b".";
@@ -224,6 +236,20 @@ mod tests {
             text.lines().nth(1).unwrap(),
             "chr1\t100\t130\t3\t42.200001,6.45705e-13\tCAG\t10\t4\t1\t2\t3\t0,9,21\tCAG,CTG\tCAGCAGCAG"
         );
+    }
+
+    /// With the consensus hidden, SubrepeatConsensi has one '.' per
+    /// subrepeat, not one per consensus including removed splits.
+    #[test]
+    fn hidden_subrepeat_consensi_match_the_subrepeats() {
+        let mut s = Settings::default();
+        s.max_consensus_period = 1;
+        let mut r = region();
+        r.splits = Some(vec![9, -1, 21]);
+        r.consensi = Some(vec![b"CAG".to_vec(), b"CAG".to_vec(), b"CTG".to_vec(), b"CTG".to_vec()]);
+        assert_eq!(render(&s, &r).lines().nth(1).unwrap(), "chr1\t100\t130\t3\t42.200001\t.\t3\t0,9,21\t.,.,.");
+        s.upstream_compat = true;
+        assert_eq!(render(&s, &r).lines().nth(1).unwrap(), "chr1\t100\t130\t3\t42.200001\t.\t3\t0,9,21\t.,.,.,.");
     }
 
     #[test]

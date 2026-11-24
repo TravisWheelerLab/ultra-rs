@@ -118,7 +118,10 @@ impl RepeatFileWriter for JSONFileWriter {
         kv(out, "Score", to_string_f32(repeat.region_score))?;
         if settings.pval {
             let pval = pval_for_score(settings, repeat.region_score);
-            kv(out, "PVal", to_string_f64(pval))?;
+            // %g as in the TSV: the C++ prints %f, so every p-value below
+            // 5e-7 (the best-scoring repeats) came out as 0.000000.
+            let text = if settings.upstream_compat { to_string_f64(pval) } else { super::fmt_g(pval) };
+            kv(out, "PVal", text)?;
         }
 
         if settings.show_counts {
@@ -224,6 +227,24 @@ mod tests {
         );
     }
 
+    /// Small p-values keep their digits (%g, as in the TSV); the C++ prints
+    /// %f, which turns them into 0.000000.
+    #[test]
+    fn pval_is_printed_with_g() {
+        let mut s = Settings::default();
+        s.pval = true;
+        let mut r = region();
+        r.region_score = 42.2;
+        let text = |s: &Settings| {
+            let mut out = Vec::new();
+            JSONFileWriter::new().write_repeat(s, &r, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert!(text(&s).contains("\"PVal\": 6.45705e-13,"), "{}", text(&s));
+        s.upstream_compat = true;
+        assert!(text(&s).contains("\"PVal\": 0.000000,"), "{}", text(&s));
+    }
+
     #[test]
     fn sequence_name_is_escaped() {
         let s = Settings::default();
@@ -266,7 +287,9 @@ mod tests {
         let mut out = Vec::new();
         w.write_repeat(&s, &r, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains(",\n\"PVal\": 0.000060,"), "{text}");
+        let pval = crate::writers::fmt_g(pval_for_score(&s, r.region_score));
+        assert!(text.contains(&format!(",\n\"PVal\": {pval},")), "{text}");
+        assert_eq!(pval, "5.99591e-05");
         assert!(
             text.contains(",\n\"Copies\": 2,\n\"Substitutions\": 0"),
             "{text}"
