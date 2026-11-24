@@ -34,7 +34,8 @@ use crate::std_sort::std_sort;
 use crate::symbol::symbol_for_char;
 use crate::umodel::UModel;
 use crate::writers::{
-    log2_pval_for_score, pval_for_score, BEDFileWriter, JSONFileWriter, OutSink, RepeatFileWriter,
+    log2_pval_for_score, pval_for_score, BEDFileWriter, BPAFFileWriter, JSONFileWriter, OutSink,
+    RepeatFileWriter,
     TabFileWriter,
 };
 
@@ -255,6 +256,9 @@ impl Ultra {
             if settings.bed_out {
                 c += 1;
             }
+            if settings.bpaf_out {
+                c += 1;
+            }
             if c > 1 {
                 if settings.ultra_out {
                     let ultra_path = format!("{}.tsv", settings.out_file);
@@ -273,6 +277,12 @@ impl Ultra {
                     outs.push(OutSink::file(open_output(&bed_path, "output file")));
                     writers.push(Box::new(BEDFileWriter::new()));
                 }
+
+                if settings.bpaf_out {
+                    let bpaf_path = format!("{}.bpaf", settings.out_file);
+                    outs.push(OutSink::file(open_output(&bpaf_path, "output file")));
+                    writers.push(Box::new(BPAFFileWriter::new()));
+                }
             } else {
                 outs.push(OutSink::file(open_output(
                     &settings.out_file,
@@ -284,6 +294,8 @@ impl Ultra {
                     writers.push(Box::new(JSONFileWriter::new()));
                 } else if settings.bed_out {
                     writers.push(Box::new(BEDFileWriter::new()));
+                } else if settings.bpaf_out {
+                    writers.push(Box::new(BPAFFileWriter::new()));
                 }
             }
 

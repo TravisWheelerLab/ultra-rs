@@ -7,10 +7,12 @@
 //! p-value parameters) and the sink as arguments on every call.
 
 pub mod bed;
+pub mod bpaf;
 pub mod json;
 pub mod tab;
 
 pub use bed::BEDFileWriter;
+pub use bpaf::BPAFFileWriter;
 pub use json::JSONFileWriter;
 pub use tab::TabFileWriter;
 

@@ -103,6 +103,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
             search_setting.ultra_out = false;
             search_setting.json_out = false;
             search_setting.bed_out = false;
+            search_setting.bpaf_out = false;
 
             // We first get the normal coverage
             let mut ultra = Ultra::new(&search_setting);
@@ -207,6 +208,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
         settings.ultra_out = false;
         settings.json_out = false;
         settings.bed_out = false;
+        settings.bpaf_out = false;
         settings.out_file = String::new();
         let mut ultra = Ultra::new(&settings);
         ultra.shuffle_sequence = true;

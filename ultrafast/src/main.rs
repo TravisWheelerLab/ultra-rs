@@ -40,6 +40,10 @@ struct Args {
     /// seq start end period fastan_id cons_len copies cons_id rounds unit parts)
     #[arg(long, value_name = "FILE")]
     tsv: Option<String>,
+    /// Also write the calls as BPAF, each aligned to its consensus unit (one record
+    /// per call or sub-repeat; the units are stored in the file)
+    #[arg(long, value_name = "FILE")]
+    bpaf: Option<String>,
 
     /// Maximum consensus refinement rounds
     #[arg(long, default_value_t = 6, help_heading = "Consensus",
@@ -214,6 +218,12 @@ fn main() -> Result<()> {
     );
     if let Some(path) = &a.tsv {
         write_tsv(path, &h.seqs, &h.arrays)?;
+    }
+    if let Some(path) = &a.bpaf {
+        let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+        // the alignments run on -t threads, as the calls did
+        rayon::ThreadPoolBuilder::new().num_threads(a.threads).build()?.install(|| h.write_bpaf(&mut w))?;
+        w.flush()?;
     }
     Ok(())
 }

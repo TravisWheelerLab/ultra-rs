@@ -66,6 +66,7 @@ Output:
   --tsv                       Use TSV output format
   --json                      Use JSON output format
   --bed                       Use BED output format
+  --bpaf                      Use BPAF output format: each repeat aligned to its consensus (requires --out)
   --max_consensus INT [1000000] 
                               The maximum length of consensus pattern to include in output
   --show_seq                  Output repetitive region
@@ -164,6 +165,8 @@ pub struct Settings {
     pub ultra_out: bool,
     pub bed_out: bool,
     pub json_out: bool,
+    /// BPAF alignment output (not in upstream ULTRA, and not in the settings block).
+    pub bpaf_out: bool,
 
     pub show_counts: bool,
     pub show_seq: bool,
@@ -264,6 +267,7 @@ impl Default for Settings {
             ultra_out: false,
             bed_out: false,
             json_out: false,
+            bpaf_out: false,
             show_counts: false,
             show_seq: false,
             show_deltas: false,
@@ -812,6 +816,7 @@ fn option_table() -> Vec<OptDef> {
         flag!(b"", &["tsv"], false, ultra_out),
         flag!(b"", &["json"], false, json_out),
         flag!(b"", &["bed"], false, bed_out),
+        flag!(b"", &["bpaf"], false, bpaf_out),
         val!(b"", &["max_consensus"], false, max_consensus_period, i32, "INT"),
         flag!(b"", &["show_seq"], false, show_seq),
         flag!(b"", &["show_delta"], false, show_deltas),
@@ -1233,6 +1238,15 @@ impl Settings {
             fail("--suppress is incompatible with --tsv, --json, and --bed\n");
         }
 
+        if self.bpaf_out && self.suppress_out {
+            fail("--suppress is incompatible with --bpaf\n");
+        }
+
+        // BPAF is binary, and the settings block goes to stdout.
+        if self.bpaf_out && self.out_file.is_empty() {
+            fail("--bpaf requires an output file path provided to --out\n");
+        }
+
         if self.mask_file.is_empty() && self.mask_with_n {
             fail("--maskn requires an output file path provided to --mask\n");
         }
@@ -1392,12 +1406,15 @@ impl Settings {
         if self.bed_out {
             c += 1;
         }
+        if self.bpaf_out {
+            c += 1;
+        }
 
         if c > 1 && self.out_file.is_empty() {
             fail("Output file path must be provided when using multiple output formats .\n");
         }
 
-        if !(self.ultra_out || self.json_out || self.bed_out) {
+        if !(self.ultra_out || self.json_out || self.bed_out || self.bpaf_out) {
             self.ultra_out = true;
         }
 

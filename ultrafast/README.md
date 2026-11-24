@@ -27,6 +27,7 @@ ultrafast -t 16 -o genome.json genome.fa                 # hybrid, ULTRA at peri
 ultrafast -t 16 genome.fa > genome.json                  # the same, JSON on stdout
 ultrafast -p 0 genome.fa > fastan_only.json              # FasTAN only (stdin allowed: '-')
 ultrafast --tsv arrays.tsv -o genome.json genome.fa      # also FasTAN's arrays as TSV
+ultrafast --bpaf genome.bpaf -o genome.json genome.fa    # also each call aligned to its unit (BPAF)
 ultrafast --filler ultra_p20.json -o genome.json genome.fa   # use a separate ULTRA run's calls
 ```
 `-t N` is the total thread count (default: all cores), split between ULTRA and FasTAN, which run at the
@@ -83,6 +84,14 @@ windows shorter than three units.
 - `ULTRAFAST_WINDOW` (FasTAN's scan window in bp, default 2,000,000; 0 = each stretch whole, as C FasTAN)
   and `ULTRAFAST_SPLIT_DEBUG` (prints split decisions to stderr) are for testing.
 
+### Alignments (`--bpaf`)
+`--bpaf FILE` also writes every call aligned to its consensus unit, as a BPAF (version 0) file in the layout
+`ultra --bpaf` uses (see the main README): one record per call, or per `SubRepeats` entry, with the sequence
+as the query, the unit as the target, and the `TARGET_CIRCULAR` flag. The units are stored in the file. Each
+record carries the call's `Score`; the scoring system is `ultra`, or the matrix name for calls scored with
+`--delta-model te`. The alignments are made after the calls, on `-t` threads (about 15 s more on a run of
+52 s for a 24 Mb simulated genome at 8 threads).
+
 ## As a library
 The crate is also a library: the command is a thin wrapper around `ultrafast::hybrid`. It isn't on crates.io,
 so depend on it through git or a path:
@@ -97,6 +106,7 @@ for r in &h.repeats {   // ULTRA's JSON records, sorted by sequence and start
     println!("{}\t{}\t{}\t{}\t{}", r.sequence_name, r.start, r.start + r.length, r.period, r.consensus);
 }
 h.write_json(std::io::stdout())?;   // the same JSON the command writes
+h.write_bpaf(std::fs::File::create("genome.bpaf")?)?;   // the alignments, as --bpaf writes them
 ```
 `HybridOptions::default()` matches the command's defaults; its fields correspond to the command-line
 options. `Hybrid` also holds the sequences read (`seqs`) and every FasTAN array before merging (`arrays`).

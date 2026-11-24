@@ -15,6 +15,7 @@
 use crate::sequence_window::SequenceWindow;
 use crate::symbol::{char_for_symbol, symbol_for_char, Symbol, NUM_SYMBOLS, N_UNK};
 use crate::umatrix::{UMatrix, CT_DELETION, CT_INSERTION, CT_MATCH};
+use crate::wrap_align::{self, ULTRA_SCORES};
 
 pub const OC_NONE: i32 = 0;
 pub const OC_TRUE: i32 = 1;
@@ -26,14 +27,10 @@ const INDEL_TEST_MIN_BASES: u64 = 12;
 /// logo.
 const INDEL_TEST_FIRST_COPY_WEIGHT: i32 = 4;
 
-/// Scores for aligning a repeat to its consensus, and how many times the
-/// alignment is repeated with the consensus it produced. In a simulation of
-/// 5,200 noisy tandem arrays, these settings gave a consensus that was a
-/// rotation of the planted unit in 2,798. Eight other score settings gave
-/// between 2,791 and 2,798, and a third pass gave no more.
-const REALIGN_MATCH: i32 = 2;
-const REALIGN_MISMATCH: i32 = -2;
-const REALIGN_GAP: i32 = -5;
+/// How many times the repeat is aligned to its consensus
+/// ([`wrap_align::ULTRA_SCORES`]) with the consensus the last alignment
+/// produced. In a simulation of 5,200 noisy tandem arrays, a third pass gave
+/// no more consensi that were a rotation of the planted unit.
 const REALIGN_PASSES: usize = 2;
 
 /// What one walk along the traceback produces.
@@ -481,16 +478,12 @@ impl RepeatRegion {
     /// The consensus is treated as a circle, with column 0 following the
     /// last column, so the alignment runs through as many copies as the
     /// repeat has and may start in any column. A base is aligned to a column
-    /// ([`REALIGN_MATCH`] or [`REALIGN_MISMATCH`]), or is an insertion, or a
-    /// column is skipped (both [`REALIGN_GAP`]). An unknown base (`N_UNK`)
+    /// (a match or a mismatch), or is an insertion, or a column is skipped,
+    /// scored by [`ULTRA_SCORES`] ([`wrap_align::align`]). An unknown base (`N_UNK`)
     /// scores 0 in every column. Bases called insertions and unknown bases
     /// are not counted, and a column that ends with no counts keeps its
     /// counts from `logo`. The traceback takes one byte per base and column.
     fn realign_logo(&self, logo: &[i32], seq: &[Symbol]) -> Vec<i32> {
-        const DIAGONAL: u8 = 0;
-        const INSERTED_BASE: u8 = 1;
-        const SKIPPED_COLUMN: u8 = 2;
-
         let mut new_logo = vec![0i32; logo.len()];
         let period = self.repeat_period.max(0) as usize;
         let start = self.window_start as usize;
@@ -501,7 +494,7 @@ impl RepeatRegion {
 
         // Arg-max symbol per column, lowest symbol on ties, as in
         // `create_consensus_from_logo`.
-        let mut consensus = vec![0usize; period];
+        let mut consensus = vec![0 as Symbol; period];
         for (j, c) in consensus.iter_mut().enumerate() {
             let row = &logo[j * NUM_SYMBOLS..(j + 1) * NUM_SYMBOLS];
             let mut best = 0;
@@ -510,84 +503,19 @@ impl RepeatRegion {
                     best = t;
                 }
             }
-            *c = best;
+            *c = best as Symbol;
         }
 
-        let mut traceback = vec![DIAGONAL; n * period];
-        let mut prev = vec![0i32; period];
-        let mut cur = vec![0i32; period];
-        for i in 0..n {
+        // One pass with the whole traceback kept, as before the aligner was
+        // shared: the bounded-memory blocks would compute every row twice.
+        let alignment =
+            wrap_align::align_with_limit(&seq[start..start + n], &consensus, ULTRA_SCORES, usize::MAX);
+        alignment.for_each_aligned(|i, j| {
             let sym = seq[start + i] as usize;
-            let moves = &mut traceback[i * period..(i + 1) * period];
-            for j in 0..period {
-                let before = (j + period - 1) % period;
-                let diagonal = prev[before]
-                    + if sym == N_UNK as usize {
-                        0
-                    } else if sym == consensus[j] {
-                        REALIGN_MATCH
-                    } else {
-                        REALIGN_MISMATCH
-                    };
-                let inserted = prev[j] + REALIGN_GAP;
-                if diagonal >= inserted {
-                    cur[j] = diagonal;
-                    moves[j] = DIAGONAL;
-                } else {
-                    cur[j] = inserted;
-                    moves[j] = INSERTED_BASE;
-                }
+            if sym != N_UNK as usize {
+                new_logo[j * NUM_SYMBOLS + sym] += 1;
             }
-            // A run of skipped columns may pass from the last column to
-            // column 0, so the row is swept twice.
-            for _ in 0..2 {
-                for j in 0..period {
-                    let before = (j + period - 1) % period;
-                    let skipped = cur[before] + REALIGN_GAP;
-                    if skipped > cur[j] {
-                        cur[j] = skipped;
-                        moves[j] = SKIPPED_COLUMN;
-                    }
-                }
-            }
-            std::mem::swap(&mut prev, &mut cur);
-        }
-
-        // Best column for the last base (lowest column on ties), then back.
-        let mut j = 0;
-        for t in 1..period {
-            if prev[t] > prev[j] {
-                j = t;
-            }
-        }
-        let mut i = n;
-        let mut skipped_in_a_row = 0;
-        while i > 0 {
-            match traceback[(i - 1) * period + j] {
-                DIAGONAL => {
-                    let sym = seq[start + i - 1] as usize;
-                    if sym != N_UNK as usize {
-                        new_logo[j * NUM_SYMBOLS + sym] += 1;
-                    }
-                    j = (j + period - 1) % period;
-                    i -= 1;
-                    skipped_in_a_row = 0;
-                }
-                INSERTED_BASE => {
-                    i -= 1;
-                    skipped_in_a_row = 0;
-                }
-                _ => {
-                    j = (j + period - 1) % period;
-                    skipped_in_a_row += 1;
-                    // Skipping every column gains nothing, so the alignment
-                    // never does it; this only guards the loop.
-                    if skipped_in_a_row > period {
-                        break;
-                    }
-                }
-            }
-        }
+        });
 
         for j in 0..period {
             let row = j * NUM_SYMBOLS..(j + 1) * NUM_SYMBOLS;
@@ -1162,6 +1090,43 @@ impl RepeatRegion {
             return;
         }
         consensi[index] = Self::permutation_for_string(&consensi[index], best_perm);
+    }
+
+    /// Each part of the repeat that has its own consensus, as (offset into
+    /// the repeat, consensus): the parts the JSON writes as `SubRepeats`, or
+    /// else the whole repeat with `string_consensus`.
+    pub fn consensus_parts(&self) -> Vec<(usize, &[u8])> {
+        let until_nul = |s: &[u8]| -> usize { s.iter().position(|&c| c == 0).unwrap_or(s.len()) };
+        if let (Some(splits), Some(consensi)) = (&self.splits, &self.consensi) {
+            // As the JSON writer: sub-repeats only when a split is past 0.
+            if splits.iter().any(|&s| s > 0) && consensi.len() > splits.len() {
+                let mut parts = Vec::with_capacity(splits.len() + 1);
+                let mut start = 0usize;
+                for (i, &split) in splits.iter().enumerate() {
+                    if split >= 0 {
+                        let c = &consensi[i];
+                        parts.push((start, &c[..until_nul(c)]));
+                        start = split as usize;
+                    }
+                }
+                let c = &consensi[splits.len()];
+                parts.push((start, &c[..until_nul(c)]));
+                return parts;
+            }
+        }
+        vec![(0, &self.string_consensus[..until_nul(&self.string_consensus)])]
+    }
+
+    /// The repeat aligned to its consensus, one [`wrap_align::Part`] per
+    /// entry of [`consensus_parts`](Self::consensus_parts). Call after
+    /// [`sort_consensi`](Self::sort_consensi), so each alignment's phase is
+    /// a column of the consensus as written. `None` without a stored
+    /// sequence ([`store_sequence`](Self::store_sequence)).
+    pub fn consensus_alignment(&self) -> Option<Vec<wrap_align::Part>> {
+        if self.sequence.is_empty() {
+            return None;
+        }
+        Some(wrap_align::align_parts(&self.sequence, &self.consensus_parts()))
     }
 
     /// C++ `SortConsensi`: rotates `string_consensus` and every `consensi`

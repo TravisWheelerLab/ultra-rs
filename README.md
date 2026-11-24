@@ -189,6 +189,20 @@ Repeats that contain subrepeats will have a "Subrepeats" array, each object in t
 Using ULTRA with `--bed`will result in a BED file with four columns (`Sequence ID`, `Start`, `End`,  `Consensus`).
 </details>
 <details>
+<summary>BPAF format (alignments)</summary>
+
+Using ULTRA with `--bpaf` writes each repeat aligned to its consensus, as a BPAF (Binary Pairwise Alignment Format, version 0) file. This is the only output with the alignment itself: where the repeat's bases fall on the consensus unit, including insertions and deletions. `--bpaf` needs `-o`, since the file is binary.
+
+- There is one record per repeat, or one per subrepeat when the repeat has them. The sequence is the query and the consensus unit is the target.
+- Each record has the `TARGET_CIRCULAR` flag: the target coordinates run along the unit repeated end to end. The target start is the unit column (1-based) that the repeat begins in, and the target length divided by the period is the copy number.
+- The units are stored in the file (the `EXT_SEQUENCES` extension), so a reader needs the input FASTA only to see the repeat's own bases. The sequences themselves are not stored.
+- A unit of up to 32 bases is named `(UNIT)n`, for example `(CA)n`. A longer one is named `TR<period>_<hash>`. The same unit has the same name in every file, and repeats with the same unit share one target.
+- The record's score is the repeat's score (every subrepeat of a repeat carries it), and the scoring system is named `ultra`.
+- The query id is the first word of the FASTA header. A consensus column with no base (`*` in the other formats) is stored as `N`.
+
+The alignment is made when the repeat is written, with the scores the consensus is built with (match 2, mismatch -2, gap -5), so runs without `--bpaf` do no extra work.
+</details>
+<details>
 <summary>Multiformat output</summary>
   
 When using the `-o <file path>` option for saving output it is possible to provide ULTRA with multiple output formats. For example:

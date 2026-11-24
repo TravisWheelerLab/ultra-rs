@@ -353,6 +353,23 @@ pub struct SubRepeat {
     pub consensus: String,
 }
 
+impl UltraRecord {
+    /// The call aligned to its consensus, one part per sub-repeat (or one
+    /// for the whole call), as `ultra` aligns its repeats: see
+    /// [`ultra_repeats::wrap_align::align_parts`]. `seq` is the whole
+    /// sequence the call is on; the call is clipped to it.
+    pub fn consensus_alignment(&self, seq: &[u8]) -> Vec<ultra_repeats::wrap_align::Part> {
+        let start = self.start.min(seq.len());
+        let end = self.start.saturating_add(self.length).min(seq.len());
+        let parts: Vec<(usize, &[u8])> = if self.sub_repeats.is_empty() {
+            vec![(0, self.consensus.as_bytes())]
+        } else {
+            self.sub_repeats.iter().map(|s| (s.start, s.consensus.as_bytes())).collect()
+        };
+        ultra_repeats::wrap_align::align_parts(&seq[start..end], &parts)
+    }
+}
+
 fn subs_of(parts: &[(usize, Vec<u8>)]) -> Vec<SubRepeat> {
     parts.iter().map(|(o, u)| SubRepeat { start: *o, consensus: String::from_utf8_lossy(u).into_owned() }).collect()
 }
@@ -804,6 +821,10 @@ impl Default for HybridOptions {
     }
 }
 
+/// The BPAF scoring-system name of a Score on ULTRA's scale (bits); a call scored
+/// with a TE matrix carries the matrix's name instead.
+pub const BPAF_ULTRA_SCORING: &str = ultra_repeats::writers::bpaf::ULTRA_SCORING;
+
 /// Result of [`hybrid`].
 pub struct Hybrid {
     /// The input sequences (upper-cased).
@@ -827,6 +848,44 @@ impl Hybrid {
             repeats: &'a [UltraRecord],
         }
         serde_json::to_writer(w, &Out { repeats: &self.repeats })?;
+        Ok(())
+    }
+
+    /// The merged calls as BPAF: each call aligned to its consensus unit, one
+    /// record per call or per sub-repeat, with the call's Score (see
+    /// [`ultra_repeats::bpaf`]). The units are stored in the file; the input
+    /// sequences are not. The alignments are made here, on the current rayon
+    /// pool.
+    pub fn write_bpaf<W: std::io::Write>(&self, mut w: W) -> anyhow::Result<()> {
+        use ultra_repeats::bpaf::{TandemRecord, TandemWriter};
+        let seq_of: std::collections::HashMap<&str, &[u8]> =
+            self.seqs.iter().map(|r| (r.name.as_str(), r.seq.as_slice())).collect();
+        let mut bw = TandemWriter::new();
+        bw.write_header(&mut w)?;
+        // in batches, so the alignments held at once stay few
+        for batch in self.repeats.chunks(1024) {
+            let aligned: Vec<_> = batch
+                .par_iter()
+                .map(|r| seq_of.get(r.sequence_name.as_str()).map(|seq| (r.start.min(seq.len()), r.consensus_alignment(seq))))
+                .collect();
+            for (r, a) in batch.iter().zip(aligned) {
+                let Some((start, parts)) = a else { continue };
+                for part in &parts {
+                    bw.write_record(
+                        &mut w,
+                        &TandemRecord {
+                            query: &r.sequence_name,
+                            q_start: (start + part.start + 1) as u64,
+                            unit: &part.consensus,
+                            alignment: &part.alignment,
+                            score: Some(r.score as f32),
+                            scoring: r.matrix.as_deref().unwrap_or(BPAF_ULTRA_SCORING),
+                        },
+                    )?;
+                }
+            }
+        }
+        bw.finish(&mut w)?;
         Ok(())
     }
 }
