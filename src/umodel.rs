@@ -593,17 +593,20 @@ impl UModel {
         // Row `r` of the column `d >= 1` columns back.
         let back = |r: usize, d: usize| -> f32 { before[(cur - d) * cpc + r] };
 
+        // diff[x][y] = mscore[x][y] - bscore[y]: the emission score of
+        // symbol y against x, the same float as the general path computes.
+        let mut diff = [[0f32; 5]; 5];
+        for x in 0..5 {
+            for y in 0..5 {
+                diff[x][y] = mscore[x][y] - bscore[y];
+            }
+        }
         let s_i = seq[i] as usize;
-        let b_i = bscore[s_i];
-        // emission_score(i, q)
-        let emit = |q: usize| -> f32 { mscore[seq[i - q] as usize][s_i] - b_i };
+        let emit = |q: usize| -> f32 { diff[seq[i - q] as usize][s_i] };
         // previous_emission_score(i, q, d): symbol i - d against i - d - q.
         let emit_back = |q: usize, d: usize| -> f32 {
             let at = i - d;
-            let s = seq[at] as usize;
-            let b = bscore[s];
-            let v = mscore[seq[at - q] as usize][s];
-            v - b
+            diff[seq[at - q] as usize][seq[at] as usize]
         };
 
         c[0] = p[0] + t_bg_bg;
