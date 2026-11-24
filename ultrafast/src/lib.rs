@@ -520,6 +520,44 @@ fn revote_parts(array: &[u8], parts: &[(usize, Vec<u8>)], period: usize, o: &Opt
     if merged.len() < 2 { Vec::new() } else { merged }
 }
 
+/// Split a filler call where its unit changes, keeping the filler's units where nothing
+/// changes: each of the filler's own parts (ULTRA's SubRepeats; the whole array if it
+/// has none) is split with [`split_parts`], seeded with that part's unit. Parts whose
+/// unit holds anything but ACGT are left as they are. Returns the parts (empty when
+/// there's only one).
+fn split_filler(array: &[u8], parts: &[(usize, Vec<u8>)], unit: &[u8], o: &Options) -> Vec<(usize, Vec<u8>)> {
+    let Some(sp) = &o.split else { return parts.to_vec() };
+    let bounds: Vec<(usize, usize, &[u8])> = if parts.len() < 2 {
+        vec![(0, array.len(), unit)]
+    } else {
+        let ends: Vec<usize> = parts.iter().skip(1).map(|x| x.0).chain([array.len()]).collect();
+        parts.iter().zip(ends).filter(|(p, e)| *e > p.0).map(|(p, e)| (p.0, e, p.1.as_slice())).collect()
+    };
+    let mut out: Vec<(usize, Vec<u8>)> = Vec::new();
+    for (b, e, u) in bounds {
+        let a = &array[b..e];
+        let sub = if !u.is_empty() && u.iter().all(|&c| consensus::code(c) < 4) {
+            split_parts(a, u, &o.cons, sp)
+        } else {
+            Vec::new()
+        };
+        if sub.is_empty() {
+            out.push((b, u.to_vec()));
+        } else {
+            out.extend(sub.into_iter().map(|(x, v)| (b + x, v)));
+        }
+    }
+    // neighbouring parts that ended up with the same unit are one part
+    let mut merged: Vec<(usize, Vec<u8>)> = Vec::new();
+    for (o_, u) in out {
+        if merged.last().is_some_and(|l| consensus_cyclic_eq(&l.1, &u)) {
+            continue;
+        }
+        merged.push((o_, u));
+    }
+    if merged.len() < 2 { Vec::new() } else { merged }
+}
+
 fn consensus_cyclic_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && (a.is_empty() || (0..a.len()).any(|r| a[r..].iter().chain(&a[..r]).eq(b.iter())))
 }
@@ -534,7 +572,7 @@ fn consensus_cyclic_eq(a: &[u8], b: &[u8]) -> bool {
 /// Records are sorted by sequence (input order) and start.
 pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], merge_opt: &Merge,
                      model: &DeltaModel, max_cells: usize) -> anyhow::Result<Merged> {
-    let Merge { filler_min, keep_filler_deltas, prefer_filler, filler_cap, filler_cons } = *merge_opt;
+    let Merge { filler_min, keep_filler_deltas, prefer_filler, filler_cap, filler_cons, filler_split } = *merge_opt;
     let gcs: Vec<f64> = recs.par_iter().map(|r| gc_pct(&r.seq)).collect();
     // a record without sequence gets no calls, and may share its name with one that has
     let idx: std::collections::HashMap<&str, usize> =
@@ -666,7 +704,8 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
         }
     }
     let fivs: Vec<Vec<(usize, usize)>> = fivs.into_iter().map(merge).collect();
-    // (seq index, start, end, unit, period, filler record whose deltas to keep, re-vote the unit, parts)
+    // (seq index, start, end, unit, period, filler record whose deltas to keep, re-vote the unit, parts,
+    //  is a filler call)
     let kept: Vec<bool> = calls
         .iter()
         .zip(&verdicts)
@@ -676,12 +715,12 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
     for v in &verdicts {
         v.1.iter().for_each(|&i| beaten[i] = true);
     }
-    type Job<'a> = (usize, usize, usize, Vec<u8>, usize, Option<&'a UltraRecord>, bool, Vec<(usize, Vec<u8>)>);
+    type Job<'a> = (usize, usize, usize, Vec<u8>, usize, Option<&'a UltraRecord>, bool, Vec<(usize, Vec<u8>)>, bool);
     let mut jobs: Vec<Job> = calls
         .iter()
         .enumerate()
         .filter(|&(i, _)| kept[i])
-        .map(|(_, c)| (c.seq, c.start, c.end, c.unit.clone(), period_of(c), None, false, c.parts.clone()))
+        .map(|(_, c)| (c.seq, c.start, c.end, c.unit.clone(), period_of(c), None, false, c.parts.clone(), false))
         .collect();
     let mut nfill = 0;
     for (i, &(si, s, e, f)) in fl.iter().enumerate() {
@@ -691,17 +730,17 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
         let keep = keep_filler_deltas && f.position_score_deltas.len() == f.length && e == f.start + f.length;
         let revote = filler_cons.is_some_and(|o| f.period >= 1 && f.period <= o.max_cons_period);
         let fparts = f.sub_repeats.iter().filter(|x| x.start < e - s).map(|x| (x.start, x.consensus.as_bytes().to_vec())).collect();
-        jobs.push((si, s, e, f.consensus.as_bytes().to_vec(), f.period, keep.then_some(f), revote, fparts));
+        jobs.push((si, s, e, f.consensus.as_bytes().to_vec(), f.period, keep.then_some(f), revote, fparts, true));
         nfill += 1;
     }
     jobs.sort_by_key(|j| (j.0, j.1, j.2));
     let out: anyhow::Result<Vec<UltraRecord>> = jobs
         .par_iter()
         .with_max_len(1)
-        .map(|(si, s, e, unit, period, kept, revote, parts)| {
+        .map(|(si, s, e, unit, period, kept, revote, parts, is_filler)| {
             let seq = &recs[*si].seq;
-            let (unit, period, parts) = match (revote, filler_cons) {
-                (true, Some(o)) => {
+            let (unit, period, parts) = match (revote, filler_cons, filler_split) {
+                (true, Some(o), _) => {
                     let seed = acgt_seed(seq, *s, *e, *period, unit);
                     let u = phase_to_start(refine(&seq[*s..*e], &seed, &o.cons).unit, &seq[*s..*e]);
                     if u.is_empty() || !u.iter().all(|c| matches!(c, b'A' | b'C' | b'G' | b'T')) {
@@ -712,6 +751,7 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
                         (u, n, revote_parts(&seq[*s..*e], parts, *period, o))
                     }
                 }
+                (_, _, Some(o)) if *is_filler => (unit.clone(), *period, split_filler(&seq[*s..*e], parts, unit, o)),
                 _ => (unit.clone(), *period, parts.clone()),
             };
             let (unit, period) = (&unit, &period);
@@ -758,6 +798,10 @@ pub struct Merge<'a> {
     pub filler_cap: Option<usize>,
     /// Re-vote filler units with the TRF-style caller.
     pub filler_cons: Option<&'a Options>,
+    /// Split filler calls where their unit changes with these options' `split` (and
+    /// `cons`), keeping the filler's units elsewhere; see `split_filler`. Not used for
+    /// calls that `filler_cons` re-votes, which are split as they are re-voted.
+    pub filler_split: Option<&'a Options>,
 }
 
 /// Result of `to_ultra_json`.
@@ -977,6 +1021,7 @@ fn hybrid_in_pool(input: &str, opt: &HybridOptions, ultra_threads: usize) -> any
         prefer_filler: !opt.prefer_fastan,
         filler_cap,
         filler_cons: opt.revote_filler.then_some(&fo),
+        filler_split: fo.split.is_some().then_some(&fo),
     };
     let m = to_ultra_json(&seqs, &arrays, filler, &merge_opt, &opt.delta_model, fo.cons.max_cells)?;
     let mut repeats = m.records;
@@ -1002,13 +1047,37 @@ fn round6(x: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::phase_to_start;
+    use super::{consensus_cyclic_eq, phase_to_start, split_filler, Options};
 
     #[test]
     fn phase_to_start_rotates_to_first_copy() {
         assert_eq!(phase_to_start(b"TGG".to_vec(), b"GGTGGTGGT"), b"GGT".to_vec());
         assert_eq!(phase_to_start(b"TG".to_vec(), b"gtgtgt"), b"GT".to_vec());
         assert_eq!(phase_to_start(b"ACGT".to_vec(), b"AC"), b"ACGT".to_vec());
+    }
+
+    #[test]
+    fn split_filler_splits_and_keeps_units() {
+        let o = Options { consensus: true, ..Default::default() };
+        // (ACGTACGTAC)12 (ACGTTCGTAC)12: one change at a period of 10, which ULTRA's
+        // splitter (5-copy windows, 85% join) leaves as one array
+        let mut arr = b"ACGTACGTAC".repeat(12);
+        arr.extend(b"ACGTTCGTAC".repeat(12));
+        let parts = split_filler(&arr, &[], b"ACGTACGTAC", &o);
+        assert_eq!(parts.len(), 2);
+        assert!((115..=125).contains(&parts[1].0), "split at {}", parts[1].0);
+        // units are phased to each part's first copy
+        assert!(consensus_cyclic_eq(&parts[0].1, b"ACGTACGTAC"));
+        assert!(consensus_cyclic_eq(&parts[1].1, b"ACGTTCGTAC"));
+        // one unit throughout: no parts, the caller keeps the filler's unit
+        let one = b"ACGTACGTAC".repeat(24);
+        assert!(split_filler(&one, &[], b"ACGTACGTAC", &o).is_empty());
+        // a unit with an ambiguity code is left alone
+        assert!(split_filler(&arr, &[], b"ACGTNCGTAC", &o).is_empty());
+        // no splitting asked for: the filler's own parts come back as they are
+        let none = Options { split: None, ..o.clone() };
+        let fp = vec![(0, b"ACGTACGTAC".to_vec()), (120, b"ACGTTCGTAC".to_vec())];
+        assert_eq!(split_filler(&arr, &fp, b"ACGTACGTAC", &none), fp);
     }
 
     /// A call whose SubRepeats text is not valid JSON (here a consensus byte

@@ -52,7 +52,8 @@ struct Args {
     /// Skip consensus for periods above this (the array keeps its middle copy)
     #[arg(long, default_value_t = 10_000, help_heading = "Consensus")]
     max_cons_period: usize,
-    /// Don't split FasTAN arrays where the unit changes (A...AB...B, same period)
+    /// Don't split arrays where the unit changes (A...AB...B, same period): FasTAN's
+    /// arrays, and ULTRA's calls beyond ULTRA's own splits
     #[arg(long, help_heading = "Consensus")]
     no_split: bool,
     /// Minimum edits a split must save
