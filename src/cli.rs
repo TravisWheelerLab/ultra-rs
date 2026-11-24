@@ -232,10 +232,11 @@ pub struct Settings {
     pub multi_option: bool,
 
     /// Score and report repeats as the C++ does (ULTRA 1.2.2 with the fixes
-    /// of pull request 95). This changes two things: the model charges the
-    /// bases after an indel as the C++ does (`UModel::upstream_indel_windows`),
-    /// and each consensus comes from the single walk of the C++ instead of
-    /// the indel test and realignment of `RepeatRegion::create_logo`. No
+    /// of pull request 95). Among other things, the model charges the bases
+    /// after an indel as the C++ does (`UModel::upstream_indel_windows`),
+    /// each consensus comes from the single walk of the C++ instead of the
+    /// indel test and realignment of `RepeatRegion::create_logo`, and
+    /// repeats are ordered and joined across windows as in the C++. No
     /// command-line option sets this. The `ultra` binary turns it on when the
     /// environment variable `ULTRA_UPSTREAM_COMPAT` is set to anything but
     /// `0` or the empty string, which is how the differential tests compare

@@ -777,6 +777,10 @@ fn probabilities() {
             "--ri 0.001 --rd 0.001",
             "--ri 0.1 --rd 0.08 --ii 0.3 --dd 0.25",
             "--ii 0.001 --dd 0.5",
+            // 0 makes the C++ take no insertion (or deletion) at all
+            "--ii 0 -c",
+            "--dd 0 -c --json",
+            "--ii 0 --dd 0 -i 3 -d 3",
             "-m 0.6 --at 0.6 --rn 0.001 --nr 0.005",
         ],
     ));

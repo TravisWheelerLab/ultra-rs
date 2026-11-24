@@ -513,6 +513,10 @@ pub struct UModel {
     /// on a perfect array of a long unit of length P, a path at period P - 1
     /// (or k * P - 1) with an insertion each copy outscores the true period.
     /// False by default; `Settings::upstream_compat` turns it on.
+    ///
+    /// When true, the model also keeps the C++'s `tscore * (n - 1)` term for
+    /// an indel of one base. That term is NaN with `--ii 0` or `--dd 0`, so
+    /// no insertion (or deletion) is ever taken, as in the C++.
     pub upstream_indel_windows: bool,
 
     /// Fill columns past the warm-up with
@@ -757,6 +761,9 @@ impl UModel {
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
         let window_cost = self.indel_window_cost();
+        // In compat mode a single-base indel keeps the C++'s `t * 0` term, which
+        // is NaN when t is -inf (--ii 0, --dd 0).
+        let keep_zero_term = self.upstream_indel_windows;
 
         let bg = CT_BACKGROUND as usize;
         let ma = CT_MATCH as usize;
@@ -863,7 +870,7 @@ impl UModel {
                         // nothing for a finite t, and with --ii 0 (t = -inf)
                         // it would make the score NaN, so that even
                         // single-base insertions could never be taken.
-                        if d.indel_number > 1 {
+                        if d.indel_number > 1 || keep_zero_term {
                             score += tscore[ins][ins] * (d.indel_number - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -920,7 +927,7 @@ impl UModel {
 
                         score += tscore[ma][del];
                         // As for insertions (--dd 0).
-                        if indel_num > 1 {
+                        if indel_num > 1 || keep_zero_term {
                             score += tscore[del][del] * (indel_num - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -1351,6 +1358,9 @@ impl UModel {
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
         let window_cost = self.indel_window_cost();
+        // In compat mode a single-base indel keeps the C++'s `t * 0` term, which
+        // is NaN when t is -inf (--ii 0, --dd 0).
+        let keep_zero_term = self.upstream_indel_windows;
 
         let bg = CT_BACKGROUND as usize;
         let ma = CT_MATCH as usize;
@@ -1447,7 +1457,7 @@ impl UModel {
                         // nothing for a finite t, and with --ii 0 (t = -inf)
                         // it would make the score NaN, so that even
                         // single-base insertions could never be taken.
-                        if d.indel_number > 1 {
+                        if d.indel_number > 1 || keep_zero_term {
                             score += tscore[ins][ins] * (d.indel_number - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -1483,7 +1493,7 @@ impl UModel {
 
                         score += tscore[ma][del];
                         // As for insertions (--dd 0).
-                        if indel_num > 1 {
+                        if indel_num > 1 || keep_zero_term {
                             score += tscore[del][del] * (indel_num - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -1655,8 +1665,9 @@ mod tests {
     fn zero_extension_probabilities_allow_single_indels() {
         let s = mixed_sequence(800, 13, 21);
         let mlen = s.len() as i32 + 3;
-        let run = |p: f32, fast: bool| {
-            let mut m = ultra_model_with(14, 4, 4, mlen, false, false, false);
+        // The traceback, and whether any score in any column was NaN.
+        let run = |p: f32, fast: bool, compat: bool| {
+            let mut m = ultra_model_with(14, 4, 4, mlen, false, false, compat);
             m.tp_consecutive_insertion = p;
             m.tp_consecutive_deletion = p;
             m.calculate_scores();
@@ -1667,18 +1678,24 @@ mod tests {
                 w.seq_mem[i] = symbol_for_char(c);
             }
             m.matrix.restart_matrix();
+            let mut nan = false;
             for i in 0..s.len() as i32 {
                 m.calculate_current_column(&w, i, None);
                 let col = m.matrix.previous_column_index;
-                assert!(m.matrix.score_column(col).iter().all(|v| !v.is_nan()), "NaN in column {col}");
+                nan |= m.matrix.score_column(col).iter().any(|v| v.is_nan());
             }
             m.calculate_current_column_without_emission(None);
             let pc = m.matrix.previous_column_index;
             m.matrix.calculate_traceback(pc);
-            m.matrix.traceback[..s.len() + 2].to_vec()
+            (m.matrix.traceback[..s.len() + 2].to_vec(), nan)
         };
         for fast in [false, true] {
-            assert_eq!(run(0.0, fast), run(1e-30, fast));
+            let (path, nan) = run(0.0, fast, false);
+            assert!(!nan, "NaN score, fast = {fast}");
+            assert_eq!(path, run(1e-30, fast, false).0);
+            // Compat mode keeps the C++ arithmetic, NaN included.
+            assert!(run(0.0, fast, true).1, "no NaN score in compat mode, fast = {fast}");
+            assert!(!run(1e-30, fast, true).1);
         }
     }
 
