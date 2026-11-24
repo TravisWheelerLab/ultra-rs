@@ -31,6 +31,10 @@
 //! linked in as `in.fa` and `argv[0]` forced to `ultra`, because the settings
 //! block that ULTRA writes into its output echoes the command line.
 //!
+//! The memory estimate ULTRA prints (and `--mem`) gives this port's sizes
+//! for its own matrix layout on the "DP matrix cells" and "Total size"
+//! lines; those two numbers are blanked in both outputs before comparing.
+//!
 //! The two programs report different versions (the C++ 1.2.2, this crate its
 //! own), in the `--help` banner and on the first line of JSON output. Before
 //! comparing, the tests rewrite the version in the C++ output to this crate's.
@@ -404,6 +408,26 @@ fn with_port_version(bytes: Vec<u8>) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Blanks the two numbers of the memory estimate that this port computes for
+/// its own matrix layout ("DP matrix cells" and "Total size"). The other
+/// lines of the estimate are compared as they are.
+fn without_memory_sizes(bytes: &[u8]) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return bytes.to_vec();
+    };
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("DP matrix cells: ") {
+            out.push_str("DP matrix cells: #\n");
+        } else if line.starts_with("Total size: ") {
+            out.push_str("Total size: #\n");
+        } else {
+            out.push_str(line);
+        }
+    }
+    out.into_bytes()
+}
+
 /// Blanks every run of digits and dots, and everything after the label of
 /// lines whose value is random.
 fn shape(bytes: &[u8]) -> Vec<u8> {
@@ -497,10 +521,11 @@ fn check(case: &Case, reference: &Path) -> Vec<String> {
     }
 
     let normalise = |b: &[u8]| -> Vec<u8> {
+        let b = without_memory_sizes(b);
         if case.compare == Compare::Shape {
-            shape(b)
+            shape(&b)
         } else {
-            b.to_vec()
+            b
         }
     };
 

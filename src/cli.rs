@@ -1441,12 +1441,24 @@ impl Settings {
     }
 
     /// The text `print_memory_usage` writes to stdout.
+    ///
+    /// The C++ counts a score for every model state in every column of a
+    /// window. This port keeps every state only for two columns and, for
+    /// the rest, the background and match scores and the traceback entries,
+    /// `max_period + 1` of each per column (see `umatrix`), so "DP matrix
+    /// cells" and "Total size" are computed for that layout. The other lines
+    /// are the C++ ones.
     pub fn memory_usage_string(&mut self) -> String {
         let num_states = self.calculate_num_states();
-        let mut dp_size = num_states as u64;
         // All the C++ arithmetic here is on 64-bit integers that may wrap.
         let total_window: i64 = self.window_size.wrapping_add(self.overlap.wrapping_mul(2));
-        dp_size = dp_size.wrapping_mul(total_window as u64);
+        let rows_per_column = self.max_period.wrapping_add(1);
+        // History scores and traceback entries for every column, plus every
+        // state of the previous and the current column.
+        let mut dp_size = rows_per_column
+            .wrapping_mul(total_window as u64)
+            .wrapping_mul(2)
+            .wrapping_add((num_states as u64).wrapping_mul(2));
         let mut s = String::new();
         s.push_str("----------------------------\n");
         s.push_str(&format!("Maximum repeat period: {}\n", self.max_period));
@@ -1745,15 +1757,42 @@ mod tests {
         );
     }
 
+    /// Every line but the two sizes, which this port computes for its own
+    /// matrix layout, is the C++ one.
     #[test]
     fn memory_cases_match_reference() {
+        let same_as_cpp = |text: &str| -> String {
+            text.lines()
+                .filter(|l| !l.starts_with("DP matrix cells: ") && !l.starts_with("Total size: "))
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
         for (a, expected) in MEM_CASES {
             let mut s = Settings::new();
             let mut err = String::new();
             assert_eq!(s.try_parse_input(&argv(a), &mut err), Ok(true), "{:?}: {}", a, err);
             s.assign_settings();
-            assert_eq!(&s.memory_usage_string(), expected, "memory for {:?}", a);
+            let got = s.memory_usage_string();
+            assert_eq!(same_as_cpp(&got), same_as_cpp(expected), "memory for {:?}", a);
+            assert_eq!(got.lines().count(), expected.lines().count(), "memory for {:?}", a);
         }
+    }
+
+    /// The two sizes, worked out by hand for the default model.
+    #[test]
+    fn memory_sizes_for_the_compact_matrix() {
+        let mut s = Settings::new();
+        let mut err = String::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "-t", "3", "x.fa"]), &mut err), Ok(true));
+        s.assign_settings();
+        let text = s.memory_usage_string();
+        // 101 rows (max period 100, plus the background) of scores and of
+        // tracebacks over a 100,200-column window, plus 2 x 1,970 states.
+        let per_thread: u64 = 2 * 101 * 100_200 + 2 * 1_970;
+        assert!(text.contains(&format!("DP matrix cells: {per_thread}\n")), "{text}");
+        // Four bytes each, three threads, plus 1,024 windows of 100,200 bytes.
+        let total = per_thread * 3 * 4 + 1_024 * 100_200;
+        assert!(text.contains(&format!("({total} bytes)")), "{text}");
     }
 
     #[test]
