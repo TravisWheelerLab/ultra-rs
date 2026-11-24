@@ -448,19 +448,24 @@ pub fn split(array: &[u8], unit: &[u8], par: &Params, sp: &SplitParams) -> Vec<(
     }
     let mut sc = Scratch::new();
     let mut out = Vec::new();
-    split_rec(&s, 0, u, par, sp, &mut sc, &mut out);
+    split_rec(&s, 0, u, par, sp, &mut sc, 0, &mut out);
     if out.len() == 1 {
         return vec![(0, unit.to_vec())];
     }
     out.into_iter().map(|(o, u)| (o, u.iter().map(|&c| LET[c as usize]).collect())).collect()
 }
 
+/// `pending` is the number of parts still queued to the right of this one
+/// (right halves of splits further up, not yet recursed into).
+#[allow(clippy::too_many_arguments)]
 fn split_rec(s: &[u8], off: usize, u: Vec<u8>, par: &Params, sp: &SplitParams, sc: &mut Scratch,
-             out: &mut Vec<(usize, Vec<u8>)>) {
+             pending: usize, out: &mut Vec<(usize, Vec<u8>)>) {
     let l = u.len();
     let minseg = (sp.min_copies * l).max(sp.min_len);
-    // remaining budget: this part plus the ones still queued can't exceed max_parts
-    if s.len() < 2 * minseg || out.len() + 2 > sp.max_parts {
+    // Splitting makes this part two: with the finished parts and those still
+    // queued, that must not pass max_parts (the queued ones were not counted
+    // before, so arrays could get more parts than max_parts).
+    if s.len() < 2 * minseg || out.len() + pending + 2 > sp.max_parts {
         out.push((off, u));
         return;
     }
@@ -500,13 +505,33 @@ fn split_rec(s: &[u8], off: usize, u: Vec<u8>, par: &Params, sp: &SplitParams, s
         out.push((off, u));
         return;
     }
-    split_rec(sl, off, ul, par, sp, sc, out);
-    split_rec(sr, off + k, ur, par, sp, sc, out);
+    split_rec(sl, off, ul, par, sp, sc, pending + 1, out);
+    split_rec(sr, off + k, ur, par, sp, sc, pending, out);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// split never returns more than max_parts parts: parts still queued on
+    /// the right count against the budget too.
+    #[test]
+    fn split_respects_max_parts() {
+        let units: [&[u8]; 6] = [b"ATG", b"ATC", b"AAC", b"GGT", b"CTA", b"TTG"];
+        let mut arr = Vec::new();
+        for u in units {
+            for _ in 0..20 {
+                arr.extend_from_slice(u);
+            }
+        }
+        let unlimited = split(&arr, b"ATG", &Params::default(), &SplitParams::default());
+        assert!(unlimited.len() >= 4, "the array should split into several parts: {unlimited:?}");
+        for max_parts in 1..=4 {
+            let sp = SplitParams { max_parts, ..SplitParams::default() };
+            let parts = split(&arr, b"ATG", &Params::default(), &sp);
+            assert!(parts.len() <= max_parts, "max_parts {max_parts}: {} parts {parts:?}", parts.len());
+        }
+    }
 
     #[test]
     fn recovers_unit_with_indels() {

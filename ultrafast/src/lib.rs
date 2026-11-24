@@ -24,19 +24,42 @@ pub struct Record {
 }
 
 /// Read a (possibly multi-record) FASTA file; sequences are upper-cased.
+///
+/// Positions are counted as ULTRA's reader counts them, so that FasTAN's and
+/// ULTRA's coordinates agree: lines starting with ';' are comments, only
+/// ASCII letters and digits are sequence (gaps, '*', spaces and the like are
+/// skipped), and sequence before the first header is a record with an empty
+/// name. The name is the first word of the header; any bytes are accepted
+/// (a header that is not UTF-8 is converted leniently).
 pub fn read_fasta(path: &str) -> std::io::Result<Vec<Record>> {
-    let rd: Box<dyn BufRead> = if path == "-" {
+    let mut rd: Box<dyn BufRead> = if path == "-" {
         Box::new(BufReader::new(std::io::stdin()))
     } else {
         Box::new(BufReader::new(std::fs::File::open(path)?))
     };
     let mut recs: Vec<Record> = Vec::new();
-    for line in rd.lines() {
-        let line = line?;
-        if let Some(h) = line.strip_prefix('>') {
-            recs.push(Record { name: h.split_whitespace().next().unwrap_or("").to_string(), seq: Vec::new() });
-        } else if let Some(r) = recs.last_mut() {
-            r.seq.extend(line.trim_end().bytes().map(|c| c.to_ascii_uppercase()));
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        line.clear();
+        if rd.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        match line.first() {
+            Some(b'>') => {
+                let header = String::from_utf8_lossy(&line[1..]);
+                recs.push(Record { name: header.split_whitespace().next().unwrap_or("").to_string(), seq: Vec::new() });
+            }
+            Some(b';') => {}
+            _ => {
+                let mut bases = line.iter().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).peekable();
+                if bases.peek().is_none() {
+                    continue;
+                }
+                if recs.is_empty() {
+                    recs.push(Record { name: String::new(), seq: Vec::new() });
+                }
+                recs.last_mut().expect("a record").seq.extend(bases);
+            }
         }
     }
     Ok(recs)
@@ -83,6 +106,33 @@ impl Call {
     pub fn fastan_identity(&self) -> f64 {
         (1.0 - self.diffs as f64 / (self.end - self.start).max(1) as f64).max(0.0)
     }
+}
+
+/// The consensus seed for a re-vote of an ULTRA call: the copy of length
+/// `period` of A, C, G and T only nearest the middle of `[start, end)`, or
+/// `fallback` (ULTRA's own unit) when there is none. ULTRA calls can span N
+/// runs, and a middle copy with N gave refine() a short seed (a wrong, shorter
+/// period) or an N-only one (an "NNNNN" unit).
+fn acgt_seed(seq: &[u8], start: usize, end: usize, period: usize, fallback: &[u8]) -> Vec<u8> {
+    let p = period.clamp(1, end - start);
+    // bad[i]: non-ACGT bases in seq[start..start + i]
+    let mut bad = Vec::with_capacity(end - start + 1);
+    bad.push(0usize);
+    for &c in &seq[start..end] {
+        let n = bad[bad.len() - 1] + !matches!(c, b'A' | b'C' | b'G' | b'T') as usize;
+        bad.push(n);
+    }
+    let clean = |s: usize| bad[s - start + p] == bad[s - start];
+    let mid = start + (end - start - p) / 2;
+    let last = end - p;
+    for d in 0..=last - start {
+        for s in [mid.checked_add(d), mid.checked_sub(d)].into_iter().flatten() {
+            if s >= start && s <= last && clean(s) {
+                return seq[s..s + p].to_vec();
+            }
+        }
+    }
+    fallback.to_vec()
 }
 
 /// One copy of length `period` centred in the array (the consensus seed).
@@ -198,15 +248,20 @@ pub fn run_ultra(input: &str, period: usize, threads: usize, upstream_compat: bo
     use ultra_repeats::{cli::Settings, ultra::Ultra};
     // ULTRA exits the process on an unreadable file; fail here with a message instead
     std::fs::File::open(input).map_err(|e| anyhow::anyhow!("{input}: {e}"))?;
-    let argv: Vec<String> = ["ultra", "-p", &period.to_string(), "-t", &threads.to_string(), "--json", "--show_delta", "--hs", input]
+    // The path is set directly, not passed through ULTRA's command-line rules
+    // (which refuse a file name starting with '-'), and parsing never exits
+    // the process.
+    let argv: Vec<String> = ["ultra", "-p", &period.to_string(), "-t", &threads.to_string(), "--json", "--show_delta", "--hs"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let mut s = Settings::new();
     s.upstream_compat = upstream_compat;
     s.prepare_settings();
-    if !s.parse_input(&argv) {
-        anyhow::bail!("ULTRA rejected its settings: {}", argv.join(" "));
+    s.in_file = input.to_string();
+    let mut err = String::new();
+    if s.try_parse_input(&argv, &mut err) != Ok(true) {
+        anyhow::bail!("ULTRA rejected its settings ({}): {}", argv.join(" "), err.trim_end());
     }
     s.assign_settings();
     let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -389,7 +444,8 @@ fn revote_parts(array: &[u8], parts: &[(usize, Vec<u8>)], period: usize, o: &Opt
     let mut out: Vec<(usize, Vec<u8>)> = Vec::new();
     for (b, e, p) in bounds {
         let a = &array[b..e];
-        let u = refine(a, middle_copy(a, 0, a.len(), p), &o.cons).unit;
+        let fallback = parts.iter().find(|x| x.0 == b).map(|x| x.1.clone()).unwrap_or_else(|| middle_copy(a, 0, a.len(), p).to_vec());
+        let u = refine(a, &acgt_seed(a, 0, a.len(), p, &fallback), &o.cons).unit;
         match &o.split {
             Some(sp) => {
                 let sub = split_parts(a, &u, &o.cons, sp);
@@ -593,9 +649,15 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
             let seq = &recs[*si].seq;
             let (unit, period, parts) = match (revote, filler_cons) {
                 (true, Some(o)) => {
-                    let u = phase_to_start(refine(&seq[*s..*e], middle_copy(seq, *s, *e, *period), &o.cons).unit, &seq[*s..*e]);
-                    let n = u.len();
-                    (u, n, revote_parts(&seq[*s..*e], parts, *period, o))
+                    let seed = acgt_seed(seq, *s, *e, *period, unit);
+                    let u = phase_to_start(refine(&seq[*s..*e], &seed, &o.cons).unit, &seq[*s..*e]);
+                    if u.is_empty() || !u.iter().all(|c| matches!(c, b'A' | b'C' | b'G' | b'T')) {
+                        // No usable vote: keep ULTRA's unit and period.
+                        (unit.clone(), *period, parts.clone())
+                    } else {
+                        let n = u.len();
+                        (u, n, revote_parts(&seq[*s..*e], parts, *period, o))
+                    }
                 }
                 _ => (unit.clone(), *period, parts.clone()),
             };
@@ -775,6 +837,12 @@ fn hybrid_in_pool(input: &str, opt: &HybridOptions, ultra_threads: usize) -> any
     let ultra_period = if opt.filler.is_some() { None } else { (opt.ultra_period > 0).then_some(opt.ultra_period) };
     if ultra_period.is_some() && input == "-" {
         anyhow::bail!("ULTRA needs a FASTA file, not stdin (or run FasTAN only: ultra_period 0)");
+    }
+    // ULTRA reads the input again after it has been read here, which works
+    // only for a regular file: a pipe (<(...), /dev/stdin) would give ULTRA
+    // nothing, silently, and a named FIFO would block.
+    if ultra_period.is_some() && !std::fs::metadata(input).map(|m| m.is_file()).unwrap_or(true) {
+        anyhow::bail!("ULTRA needs a regular FASTA file, not a pipe: {input} (or run FasTAN only: ultra_period 0)");
     }
     let fo = Options { consensus: true, ..opt.fastan.clone() };
     let seqs = read_fasta(input)?;

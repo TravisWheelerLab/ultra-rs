@@ -320,3 +320,106 @@ fn output_to_a_device_and_option_checks() {
     let left: Vec<_> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(left.len(), 2, "{left:?}");
 }
+
+/// Gaps, '*' and ';' comment lines are not sequence (as ULTRA counts it), so
+/// FasTAN's and ULTRA's coordinates agree and an array is reported once.
+#[test]
+fn non_sequence_bytes_do_not_shift_coordinates() {
+    let d = dir("non_sequence_bytes");
+    let mut st = 0x5eed_0001u64;
+    let mut seq = bases(&mut st, 200);
+    seq.extend(b"CA".repeat(40));
+    seq.extend(bases(&mut st, 200));
+    let mut text = b">s1\n".to_vec();
+    text.extend(b"-".repeat(50));
+    // A comment long enough that counting it as sequence would shift FasTAN
+    // off ULTRA's call.
+    text.extend(b"\n;");
+    text.extend(b"comment".repeat(12));
+    text.extend(b"\n");
+    text.extend(&seq);
+    text.extend(b"\n");
+    let fa = d.join("gaps.fa");
+    fs::write(&fa, &text).unwrap();
+    let clean = d.join("clean.fa");
+    write_fa(&clean, &[("s1", seq)], "\n");
+    let got: Vec<_> = records(&["-t", "1"], &fa).iter().map(span).collect();
+    let want: Vec<_> = records(&["-t", "1"], &clean).iter().map(span).collect();
+    assert_eq!(got, want);
+    assert_eq!(got.len(), 1, "{got:?}");
+}
+
+/// --revote-filler keeps the period when the middle copy of an ULTRA call is
+/// partly N (it seeded the vote with a shorter copy before).
+#[test]
+fn revote_seed_skips_n() {
+    let d = dir("revote_n");
+    let mut st = 0x5eed_0002u64;
+    let unit = b"AGGTCCATGTTAGC";
+    let mut seq = bases(&mut st, 100);
+    for _ in 0..6 {
+        seq.extend_from_slice(unit);
+    }
+    seq.extend_from_slice(&unit[..3]);
+    seq.extend(b"N".repeat(7));
+    seq.extend_from_slice(&unit[10..]);
+    for _ in 0..6 {
+        seq.extend_from_slice(unit);
+    }
+    seq.extend(bases(&mut st, 100));
+    let fa = d.join("nmid.fa");
+    write_fa(&fa, &[("n1", seq)], "\n");
+    let recs = records(&["-t", "1", "--revote-filler"], &fa);
+    let r = recs.iter().find(|r| r["Length"].as_u64().unwrap() > 100).expect("the array");
+    assert_eq!(r["Period"], 14, "{r}");
+    let c = r["Consensus"].as_str().unwrap();
+    assert!(format!("{0}{0}", unit.iter().map(|&b| b as char).collect::<String>()).contains(c), "{c}");
+}
+
+/// Input ULTRA cannot read a second time (a pipe) is refused rather than
+/// giving ULTRA an empty file.
+#[test]
+fn pipe_input_is_refused() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+        .args(["-t", "1", "/dev/stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(b">s\nACGTACGT\n");
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a pipe"), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A header that is not UTF-8 is accepted; a file name starting with '-'
+/// reaches ULTRA.
+#[test]
+fn latin1_headers_and_dash_file_names() {
+    let d = dir("latin1_dash");
+    let mut st = 0x5eed_0003u64;
+    let mut seq = bases(&mut st, 200);
+    seq.extend(b"CA".repeat(40));
+    seq.extend(bases(&mut st, 200));
+    let mut text = b">s1 caf\xe9\n".to_vec();
+    text.extend(&seq);
+    text.extend(b"\n");
+    let fa = d.join("latin1.fa");
+    fs::write(&fa, &text).unwrap();
+    let recs = records(&["-t", "1"], &fa);
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0]["SequenceName"], "s1");
+
+    fs::write(d.join("-x.fa"), &text).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+        .current_dir(&d)
+        .args(["-t", "1", "--", "-x.fa"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let j: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["Repeats"].as_array().unwrap().len(), 1);
+}
