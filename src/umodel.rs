@@ -51,6 +51,110 @@ fn previous_emission_score(
     v - b
 }
 
+/// Emission scores by sequence position for the steady-state column. Every
+/// emission the column scores is `diff[seq[a]][seq[b]]` (`diff[x][y] =
+/// mscore[x][y] - bscore[y]`) with one of the two symbols fixed for a whole
+/// run of the other, so with ten arrays, `against(y)[a] = diff[seq[a]][y]`
+/// and `from(x)[a] = diff[x][seq[a]]`, each run is a contiguous slice.
+///
+/// Positions are filled in order as columns are computed, and refilled
+/// from the start when the matrix is restarted (a new window) or `diff`
+/// changes. Within one window the sequence must not change, as the matrix
+/// itself already requires.
+#[derive(Debug, Clone, Default)]
+pub struct PositionEmissions {
+    /// Bits of the `mscore` and `bscore` the values were computed from.
+    mscore_bits: [[u32; 5]; 5],
+    bscore_bits: [u32; 5],
+    diff: [[f32; 5]; 5],
+    restarts: u64,
+    filled: usize,
+    stride: usize,
+    values: Vec<f32>,
+}
+
+/// Positions [`PositionEmissions::fill`] fills at least at a time.
+const FILL_AHEAD: usize = 256;
+
+impl PositionEmissions {
+    /// `diff[seq[a]][y]` for every filled position `a`.
+    #[inline(always)]
+    fn against(&self, y: Symbol) -> &[f32] {
+        let k = y as usize;
+        &self.values[k * self.stride..k * self.stride + self.filled]
+    }
+
+    /// `diff[x][seq[a]]` for every filled position `a`.
+    #[inline(always)]
+    fn from(&self, x: Symbol) -> &[f32] {
+        let k = 5 + x as usize;
+        &self.values[k * self.stride..k * self.stride + self.filled]
+    }
+
+    /// Makes positions `0..=upto` of `seq` valid for these `mscore` and
+    /// `bscore` and the matrix restart count `restarts`.
+    fn fill(
+        &mut self,
+        seq: &[Symbol],
+        upto: usize,
+        mscore: &[[f32; 5]; 5],
+        bscore: &[f32; 5],
+        restarts: u64,
+    ) {
+        // Any bit of mscore or bscore changed (branch-free: this runs for
+        // every column).
+        let mut changed = 0u32;
+        for x in 0..5 {
+            for y in 0..5 {
+                changed |= mscore[x][y].to_bits() ^ self.mscore_bits[x][y];
+            }
+            changed |= bscore[x].to_bits() ^ self.bscore_bits[x];
+        }
+        if changed != 0 || restarts != self.restarts || self.values.is_empty() {
+            self.mscore_bits = mscore.map(|row| row.map(f32::to_bits));
+            self.bscore_bits = bscore.map(f32::to_bits);
+            self.restarts = restarts;
+            self.filled = 0;
+            // diff[x][y] = mscore[x][y] - bscore[y]: the emission score of
+            // symbol y against x, the same float as the general path.
+            for x in 0..5 {
+                for y in 0..5 {
+                    self.diff[x][y] = mscore[x][y] - bscore[y];
+                }
+            }
+        }
+        let diff = self.diff;
+        if seq.len() > self.stride {
+            self.stride = seq.len();
+            self.values = vec![0.0; 10 * self.stride];
+            self.filled = 0;
+        }
+        if self.filled > upto {
+            return;
+        }
+        // Fill ahead in runs, one array at a time: a position's values do
+        // not depend on when they are filled.
+        let stride = self.stride;
+        let from = self.filled;
+        let to = (upto + 1).max(from + FILL_AHEAD).min(seq.len());
+        let symbols = &seq[from..to];
+        for y in 0..5 {
+            let against = &mut self.values[y * stride + from..y * stride + to];
+            for (v, &s) in against.iter_mut().zip(symbols) {
+                *v = diff[s as usize][y];
+            }
+        }
+        for x in 0..5 {
+            let k = 5 + x;
+            let by = &mut self.values[k * stride + from..k * stride + to];
+            for (v, &s) in by.iter_mut().zip(symbols) {
+                *v = diff[x][s as usize];
+            }
+        }
+        self.filled = to;
+    }
+}
+
 /// The current column (written) and the previous column (read) of the
 /// matrix, every row, plus the background and match rows of every column.
 struct ColumnSplit<'a> {
@@ -58,7 +162,7 @@ struct ColumnSplit<'a> {
     c: &'a mut [f32],
     history: &'a [f32],
     desc: &'a [Cell],
-    history_rows: usize,
+    history_stride: usize,
     cur: usize,
     length: usize,
 }
@@ -70,13 +174,13 @@ impl<'a> ColumnSplit<'a> {
         history: &'a [f32],
         desc: &'a [Cell],
         cur: usize,
-        history_rows: usize,
+        history_stride: usize,
         length: usize,
     ) -> Self {
         let cpc = desc.len();
         let (slot0, slot1) = full.split_at_mut(cpc);
         let (c, p) = if cur & 1 == 0 { (slot0, &*slot1) } else { (slot1, &*slot0) };
-        ColumnSplit { p, c, history, desc, history_rows, cur, length }
+        ColumnSplit { p, c, history, desc, history_stride, cur, length }
     }
 
     /// C++ `UMatrix::PreviousScore`, reading the current column live.
@@ -92,10 +196,254 @@ impl<'a> ColumnSplit<'a> {
             } else {
                 let cell = self.desc[row];
                 debug_assert!(cell.cell_type == CT_MATCH || cell.cell_type == CT_BACKGROUND);
-                self.history[col * self.history_rows + cell.order as usize]
+                self.history[cell.order as usize * self.history_stride + col]
             };
         }
         s
+    }
+}
+
+/// `LANES` consecutive elements of `s` from `start`, as an array.
+#[inline(always)]
+fn block<T: Copy + Default>(s: &[T], start: usize) -> [T; LANES] {
+    let mut a = [T::default(); LANES];
+    a.copy_from_slice(&s[start..start + LANES]);
+    a
+}
+
+/// Cells per block in the steady column's indel loops.
+const LANES: usize = 4;
+
+/// Whether a model with these indel counts fills its steady columns with
+/// the blocked kernel, which also keeps [`POSITION_EMISSION_ARRAYS`] floats
+/// per window position.
+pub fn uses_blocked_kernel(max_insertions: usize, max_deletions: usize) -> bool {
+    max_insertions / LANES + max_deletions / LANES >= 2
+}
+
+/// Floats per window position that the blocked kernel keeps (see
+/// `PositionEmissions`).
+pub const POSITION_EMISSION_ARRAYS: u64 = 10;
+
+/// Updates `best` / `best_from` with the exits of consecutive rows
+/// `first_row..` as the general path does, one at a time, keeping the first
+/// strictly greater. The block's maximum only decides whether any exit needs
+/// that check, so the result is the same.
+#[inline(always)]
+fn take_exits(exit: &[f32], best: &mut f32, best_from: &mut i32, first_row: usize) {
+    let mut m = exit[0];
+    for &e in &exit[1..] {
+        m = m.max(e);
+    }
+    if m > *best {
+        for (l, &e) in exit.iter().enumerate() {
+            if e > *best {
+                *best = e;
+                *best_from = (first_row + l) as i32;
+            }
+        }
+    }
+}
+
+/// Per-order scratch for the steady-state column.
+#[derive(Debug, Clone, Default)]
+struct OrderScratch {
+    best: Vec<f32>,
+    best_from: Vec<i32>,
+    es: Vec<f32>,
+}
+
+impl OrderScratch {
+    /// The three arrays, at least `n` long.
+    fn for_orders(&mut self, n: usize) -> (&mut [f32], &mut [i32], &mut [f32]) {
+        if self.best.len() < n {
+            self.best.resize(n, 0.0);
+            self.best_from.resize(n, 0);
+            self.es.resize(n, 0.0);
+        }
+        (&mut self.best, &mut self.best_from, &mut self.es)
+    }
+}
+
+/// One order's insertion and deletion cells of a steady column, filled by
+/// [`SteadyOrder::fill`]. Kept out of line so that the loop over orders, which
+/// most orders pass through with few or no indel cells, stays small.
+struct SteadyOrder<'a> {
+    seq: &'a [Symbol],
+    i: usize,
+    o: usize,
+    /// The order's match row.
+    r: usize,
+    cur: usize,
+    n_ins: usize,
+    n_del: usize,
+    /// The order's match emission, emission_score(i, o).
+    es: f32,
+    t_in_ma: f32,
+    t_de_ma: f32,
+    /// This order's history row.
+    h_o: &'a [f32],
+    pe: &'a PositionEmissions,
+}
+
+impl SteadyOrder<'_> {
+    /// Writes the indel rows of the current column `c` from the previous
+    /// column `p`, and takes their exits into `best_in` / `best_from_in`.
+    #[inline(never)]
+    fn fill(&self, p: &[f32], c: &mut [f32], best_in: &mut f32, best_from_in: &mut i32) {
+        let SteadyOrder { seq, i, o, r, cur, n_ins, n_del, es, t_in_ma, t_de_ma, h_o, pe } = *self;
+        let against = |y: Symbol| pe.against(y);
+        let from = |x: Symbol| pe.from(x);
+        let emit_i = against(seq[i]);
+        let mut best = *best_in;
+        let mut best_from = *best_from_in;
+        // Every emission of this order's indel cells is a contiguous run
+        // of one of the position arrays, and every look-back a
+        // contiguous run of this order's history, so the indel loops run
+        // on blocks of LANES cells. Within a cell the operations and
+        // their order are those of the general path.
+        // previous_emission_score(i, q, d) = diff[seq[i - d - q]][seq[i - d]].
+        let at_o = against(seq[i - o]);
+        let parent_o = h_o[cur - o];
+        let parent_o1 = h_o[cur - o - 1];
+
+        // Fewer cells than a block, and the cells after the last block,
+        // are filled one at a time straight from the arrays.
+        let ins_cell = |k: usize, pr: f32| -> f32 {
+            let mut v = pr;
+            v -= h_o[cur - o - k - 1];
+            v += h_o[cur - o - k];
+            v -= at_o[i - 2 * o - k];
+            v += emit_i[i - o - k];
+            v
+        };
+        if n_ins < LANES {
+            for k in 1..=n_ins {
+                let row = r + k;
+                let pr = p[row];
+                let exit = pr + t_in_ma + es;
+                if exit > best {
+                    best = exit;
+                    best_from = row as i32;
+                }
+                c[row] = ins_cell(k, pr);
+            }
+        } else {
+            let n = n_ins;
+            // Index n - k (k = 1..=n) of each slice: insertion k's match
+            // score o + k + 1 and o + k columns back, and its emissions,
+            // i - 2o - k against i - o and i - o - k against i.
+            let further = &h_o[cur - o - 1 - n..cur - o - 1];
+            let nearer = &h_o[cur - o - n..cur - o];
+            let e_back = &at_o[i - 2 * o - n..i - 2 * o];
+            let e_here = &emit_i[i - o - n..i - o];
+            let rows = r + 1..r + 1 + n;
+            let pin = &p[rows.clone()];
+            let cin = &mut c[rows];
+            let one = |pr: f32, fu: f32, ne: f32, eb: f32, eh: f32| -> f32 {
+                let mut v = pr;
+                v -= fu;
+                v += ne;
+                v -= eb;
+                v += eh;
+                v
+            };
+            let mut j = 0;
+            while j + LANES <= n {
+                // Cells j..j + LANES; the reversed slices hold them at
+                // n - LANES - j.. in reverse.
+                let q = n - LANES - j;
+                let (pv, fv, nv) = (block(pin, j), block(further, q), block(nearer, q));
+                let (ebv, ehv) = (block(e_back, q), block(e_here, q));
+                let mut v = [0f32; LANES];
+                let mut exit = [0f32; LANES];
+                for l in 0..LANES {
+                    let x = LANES - 1 - l;
+                    v[l] = one(pv[l], fv[x], nv[x], ebv[x], ehv[x]);
+                    exit[l] = pv[l] + t_in_ma + es;
+                }
+                cin[j..j + LANES].copy_from_slice(&v);
+                take_exits(&exit, &mut best, &mut best_from, r + 1 + j);
+                j += LANES;
+            }
+            while j < n {
+                let pr = pin[j];
+                cin[j] = ins_cell(j + 1, pr);
+                take_exits(&[pr + t_in_ma + es], &mut best, &mut best_from, r + 1 + j);
+                j += 1;
+            }
+        }
+
+        if n_del > 0 && n_del < LANES {
+            let from_o = from(seq[i - o]);
+            let from_2o = from(seq[i - 2 * o]);
+            for k in 1..=n_del {
+                let row = r + n_ins + k;
+                let pr = p[row];
+                let exit = pr + t_de_ma + es;
+                if exit > best {
+                    best = exit;
+                    best_from = row as i32;
+                }
+                let mut v = pr;
+                v -= parent_o1;
+                v += parent_o;
+                v -= at_o[i - 2 * o + k];
+                v += from_o[i - k];
+                v -= from_2o[i - k];
+                v += emit_i[i - 2 * o + k];
+                c[row] = v;
+            }
+        } else if n_del > 0 {
+            let n = n_del;
+            // Deletion k's emissions: i - 2o + k against i - o and i
+            // (index k - 1), and i - k against i - o and i - 2o (index
+            // n - k).
+            let e_at = &at_o[i - 2 * o + 1..i - 2 * o + 1 + n];
+            let e_up = &emit_i[i - 2 * o + 1..i - 2 * o + 1 + n];
+            let e_by_o = &from(seq[i - o])[i - n..i];
+            let e_by_2o = &from(seq[i - 2 * o])[i - n..i];
+            let first = r + n_ins + 1;
+            let rows = first..first + n;
+            let pdel = &p[rows.clone()];
+            let cdel = &mut c[rows];
+            let one = |pr: f32, a: f32, b: f32, d: f32, u: f32| -> f32 {
+                let mut v = pr;
+                v -= parent_o1;
+                v += parent_o;
+                v -= a;
+                v += b;
+                v -= d;
+                v += u;
+                v
+            };
+            let mut j = 0;
+            while j + LANES <= n {
+                let q = n - LANES - j;
+                let (pv, av, uv) = (block(pdel, j), block(e_at, j), block(e_up, j));
+                let (bv, dv) = (block(e_by_o, q), block(e_by_2o, q));
+                let mut v = [0f32; LANES];
+                let mut exit = [0f32; LANES];
+                for l in 0..LANES {
+                    let x = LANES - 1 - l;
+                    v[l] = one(pv[l], av[l], bv[x], dv[x], uv[l]);
+                    exit[l] = pv[l] + t_de_ma + es;
+                }
+                cdel[j..j + LANES].copy_from_slice(&v);
+                take_exits(&exit, &mut best, &mut best_from, first + j);
+                j += LANES;
+            }
+            while j < n {
+                let q = n - 1 - j;
+                let pr = pdel[j];
+                cdel[j] = one(pr, e_at[j], e_by_o[q], e_by_2o[q], e_up[j]);
+                take_exits(&[pr + t_de_ma + es], &mut best, &mut best_from, first + j);
+                j += 1;
+            }
+        }
+
+        *best_in = best;
+        *best_from_in = best_from;
     }
 }
 
@@ -151,6 +499,11 @@ pub struct UModel {
     /// gives the same scores and tracebacks bit for bit. True by default;
     /// tests turn it off to compare the two paths.
     pub fast_columns: bool,
+
+    /// Emissions by position for the steady-state column.
+    position_emissions: PositionEmissions,
+    /// Per-order scratch for the steady-state column.
+    order_scratch: OrderScratch,
 }
 
 impl UModel {
@@ -194,6 +547,8 @@ impl UModel {
             adjust_match_mismatch_matrix: true,
             upstream_indel_windows: false,
             fast_columns: true,
+            position_emissions: PositionEmissions::default(),
+            order_scratch: OrderScratch::default(),
         };
         m.calculate_scores();
         m
@@ -337,9 +692,14 @@ impl UModel {
     ) {
         let seq = sequence.seq();
         let max_order = self.matrix.max_period.saturating_sub(1);
-        if self.fast_columns && max_order > 0 {
+        if self.fast_columns && max_order > 0 && (nuc_index as usize) < seq.len() {
+            // Only the blocked kernel reads emissions by position.
+            if self.use_blocked_kernel() {
+                let restarts = self.matrix.restarts;
+                self.position_emissions.fill(seq, nuc_index as usize, &self.mscore, &self.bscore, restarts);
+            }
             if self.column_is_steady(seq.len(), nuc_index) {
-                self.calculate_steady_column(seq, nuc_index as usize, max_order);
+                self.steady_column(seq, nuc_index as usize, max_order);
                 self.matrix.move_matrix_forward();
                 return;
             }
@@ -348,7 +708,7 @@ impl UModel {
             // row order, as the general path would.
             let n = self.steady_orders(seq.len(), nuc_index);
             if n > 0 {
-                self.calculate_steady_column(seq, nuc_index as usize, n);
+                self.steady_column(seq, nuc_index as usize, n);
                 let start_row = self.matrix.match_rows[n + 1];
                 self.calculate_general_rows(seq, nuc_index, start_row);
                 let cur = self.matrix.current_column_index;
@@ -392,8 +752,8 @@ impl UModel {
         let desc: &[Cell] = &m.cell_descriptions[..cpc];
         let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
         debug_assert_eq!(prev + 1, cur);
-        let hrows = m.max_period + 1;
-        let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, hrows, m.length);
+        let stride = m.length + 1;
+        let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, stride, m.length);
         let p: &[f32] = cols.p;
 
         for (row, &d) in desc.iter().enumerate().skip(start_row) {
@@ -558,6 +918,178 @@ impl UModel {
 
     }
 
+    /// [`calculate_steady_column`](Self::calculate_steady_column) for models
+    /// with few indel cells per order (see `use_blocked_kernel`): one pass
+    /// over the orders, scalar, which is faster when the orders have fewer
+    /// than two full blocks. The same operations in the same order, so the
+    /// same result.
+    fn calculate_steady_column_fused(&mut self, seq: &[Symbol], i: usize, n_orders: usize) {
+        let mscore = &self.mscore;
+        let bscore = &self.bscore;
+        let tscore = &self.tscore;
+        let period_decay = self.period_decay;
+        let period_decay_offset = self.period_decay_offset;
+        let immediate = self.immediate_transition_to_repeat;
+
+        let bg = CT_BACKGROUND as usize;
+        let ma = CT_MATCH as usize;
+        let ins = CT_INSERTION as usize;
+        let del = CT_DELETION as usize;
+        let t_bg_bg = tscore[bg][bg];
+        let t_ma_bg = tscore[ma][bg];
+        let t_bg_ma = tscore[bg][ma];
+        let t_ma_ma = tscore[ma][ma];
+        let t_in_ma = tscore[ins][ma];
+        let t_de_ma = tscore[del][ma];
+
+        let m = &mut self.matrix;
+        let cpc = m.cells_per_column;
+        let cur = m.current_column_index;
+        let tbr = m.max_period + 1;
+        let max_period = m.max_period;
+        let max_ins = m.max_insertions;
+        let max_del = m.max_deletions;
+
+        let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
+        let (slot0, slot1) = m.full_columns.split_at_mut(cpc);
+        let (c, p) = if cur & 1 == 0 { (slot0, &*slot1) } else { (slot1, &*slot0) };
+        let stride = m.length + 1;
+        // Order `o` of column `col` is history[o * stride + col].
+        let history = &mut m.history[..];
+        // The background (`order` 0) or order-`order` match score of the
+        // column `d >= 1` columns back.
+        macro_rules! back {
+            ($order:expr, $d:expr) => {
+                history[($order) * stride + cur - ($d)]
+            };
+        }
+
+        // diff[x][y] = mscore[x][y] - bscore[y]: the emission score of
+        // symbol y against x, the same float as the general path computes.
+        let mut diff = [[0f32; 5]; 5];
+        for x in 0..5 {
+            for y in 0..5 {
+                diff[x][y] = mscore[x][y] - bscore[y];
+            }
+        }
+        let s_i = seq[i] as usize;
+        let emit = |q: usize| -> f32 { diff[seq[i - q] as usize][s_i] };
+        // previous_emission_score(i, q, d): symbol i - d against i - d - q.
+        let emit_back = |q: usize, d: usize| -> f32 {
+            let at = i - d;
+            diff[seq[at - q] as usize][seq[at] as usize]
+        };
+
+        c[0] = p[0] + t_bg_bg;
+        ct[0] = 0;
+
+        debug_assert!(n_orders < max_period);
+        let mut r = 1usize;
+        let mut o = 1usize;
+        while o <= n_orders {
+            let order = o as f32;
+
+            // The match row: first its exit to the background row.
+            let mut score = p[r] + t_ma_bg;
+            score += order * period_decay;
+            score += period_decay_offset;
+            if score > c[0] {
+                c[0] = score;
+                ct[0] = r as i32;
+            }
+
+            let zscore = if immediate {
+                p[0]
+            } else {
+                // Order 1 reads the current column's background row live.
+                let z = if o == 1 { c[0] } else { back!(0, o - 1) };
+                z + t_bg_bg * order
+            };
+            let es = emit(o);
+            let mut best = zscore + t_bg_ma + es;
+            let mut best_from = 0i32;
+            let stay = p[r] + t_ma_ma + es;
+            if stay > best {
+                best = stay;
+                best_from = r as i32;
+            }
+
+            let n_ins = max_ins.min(o - 1);
+            let n_del = max_del.min(o - 1);
+
+            // This order's match score o and o + 1 columns back. Insertion k
+            // reads it o + k and o + k + 1 columns back, so each iteration
+            // loads one new value and reuses the previous one.
+            let parent_o = back!(o, o);
+            let parent_o1 = back!(o, o + 1);
+            let mut nearer = parent_o1;
+            for k in 1..=n_ins {
+                let row = r + k;
+                let per = o + k;
+                let pr = p[row];
+                let exit = pr + t_in_ma + es;
+                if exit > best {
+                    best = exit;
+                    best_from = row as i32;
+                }
+                let further = back!(o, per + 1);
+                let mut v = pr;
+                v -= further;
+                v += nearer;
+                v -= emit_back(per, o);
+                v += emit(per);
+                c[row] = v;
+                nearer = further;
+            }
+
+            for k in 1..=n_del {
+                let row = r + n_ins + k;
+                let del_order = o - k;
+                let e_order = 2 * o - k;
+                let pr = p[row];
+                let exit = pr + t_de_ma + es;
+                if exit > best {
+                    best = exit;
+                    best_from = row as i32;
+                }
+                let mut v = pr;
+                v -= parent_o1;
+                v += parent_o;
+                v -= emit_back(del_order, o);
+                v += emit_back(del_order, k);
+                v -= emit_back(e_order, k);
+                v += emit(e_order);
+                c[row] = v;
+            }
+
+            c[r] = best;
+            history[o * stride + cur] = best;
+            ct[o] = best_from;
+            r += 1 + n_ins + n_del;
+            o += 1;
+        }
+        debug_assert!(n_orders + 1 < max_period || r == cpc);
+        history[cur] = c[0];
+    }
+
+    /// The steady-state column for orders `1..=n_orders`: the blocked kernel,
+    /// or the fused scalar one for models with few indel cells per order.
+    #[inline(always)]
+    fn steady_column(&mut self, seq: &[Symbol], i: usize, n_orders: usize) {
+        if self.use_blocked_kernel() {
+            self.calculate_steady_column(seq, i, n_orders);
+        } else {
+            self.calculate_steady_column_fused(seq, i, n_orders);
+        }
+    }
+
+    /// Whether the largest orders have at least two full blocks of indel
+    /// cells; with fewer, the fused scalar kernel is faster.
+    #[inline(always)]
+    fn use_blocked_kernel(&self) -> bool {
+        uses_blocked_kernel(self.matrix.max_insertions, self.matrix.max_deletions)
+    }
+
     /// How many orders, from order 1 up, have every cell past its warm-up in
     /// the current column (see [`SteadyState::by_order`]). The bounds grow
     /// with the order, so these orders form a prefix.
@@ -610,9 +1142,9 @@ impl UModel {
     /// with [`calculate_general_rows`](Self::calculate_general_rows) and
     /// records the history. Does not move the matrix forward.
     fn calculate_steady_column(&mut self, seq: &[Symbol], i: usize, n_orders: usize) {
-        let mscore = &self.mscore;
-        let bscore = &self.bscore;
         let tscore = &self.tscore;
+        let pe = &self.position_emissions;
+        debug_assert!(pe.filled > i);
         let period_decay = self.period_decay;
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
@@ -639,120 +1171,153 @@ impl UModel {
         let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
         let (slot0, slot1) = m.full_columns.split_at_mut(cpc);
         let (c, p) = if cur & 1 == 0 { (slot0, &*slot1) } else { (slot1, &*slot0) };
-        let hrows = m.max_period + 1;
-        let (history, hist_rest) = m.history.split_at_mut(cur * hrows);
-        // This column's background and match rows, written as they finish.
-        let hist_cur = &mut hist_rest[..hrows];
+        let stride = m.length + 1;
+        // Order `o` of column `col` is history[o * stride + col]. This
+        // column's entries are written as its rows finish; only earlier
+        // columns are read.
+        let history = &mut m.history[..];
         // The background (`order` 0) or order-`order` match score of the
         // column `d >= 1` columns back.
-        let back = |order: usize, d: usize| -> f32 { history[(cur - d) * hrows + order] };
-
-        // diff[x][y] = mscore[x][y] - bscore[y]: the emission score of
-        // symbol y against x, the same float as the general path computes.
-        let mut diff = [[0f32; 5]; 5];
-        for x in 0..5 {
-            for y in 0..5 {
-                diff[x][y] = mscore[x][y] - bscore[y];
-            }
+        macro_rules! back {
+            ($order:expr, $d:expr) => {
+                history[($order) * stride + cur - ($d)]
+            };
         }
-        let s_i = seq[i] as usize;
-        let emit = |q: usize| -> f32 { diff[seq[i - q] as usize][s_i] };
-        // previous_emission_score(i, q, d): symbol i - d against i - d - q.
-        let emit_back = |q: usize, d: usize| -> f32 {
-            let at = i - d;
-            diff[seq[at - q] as usize][seq[at] as usize]
-        };
 
-        c[0] = p[0] + t_bg_bg;
-        ct[0] = 0;
+        // Emissions by position (see PositionEmissions): against(y)[a] is
+        // diff[seq[a]][y] and from(x)[a] is diff[x][seq[a]], the same floats
+        // as the general path computes.
+        let against = |y: Symbol| pe.against(y);
+        // emission_score(i, q) = diff[seq[i - q]][seq[i]].
+        let emit_i = against(seq[i]);
+
+        // The background row's running max stays in locals and is written
+        // once at the end, so the loop over orders does not go through
+        // memory for it.
+        let mut bg = p[0] + t_bg_bg;
+        let mut bg_from = 0i32;
 
         debug_assert!(n_orders < max_period);
-        let mut r = 1usize;
-        let mut o = 1usize;
-        while o <= n_orders {
-            let order = o as f32;
+        let match_rows = &m.match_rows[..];
+        let (best, best_from, order_es) = self.order_scratch.for_orders(n_orders + 1);
 
-            // The match row: first its exit to the background row.
+        // Pass 1: every order's match row, from the background row and from
+        // itself, and its exit to the background row, in order.
+        for o in 1..=n_orders {
+            let r = match_rows[o];
+            let order = o as f32;
             let mut score = p[r] + t_ma_bg;
             score += order * period_decay;
             score += period_decay_offset;
-            if score > c[0] {
-                c[0] = score;
-                ct[0] = r as i32;
+            if score > bg {
+                bg = score;
+                bg_from = r as i32;
             }
 
             let zscore = if immediate {
                 p[0]
             } else {
                 // Order 1 reads the current column's background row live.
-                let z = if o == 1 { c[0] } else { back(0, o - 1) };
+                let z = if o == 1 { bg } else { back!(0, o - 1) };
                 z + t_bg_bg * order
             };
-            let es = emit(o);
-            let mut best = zscore + t_bg_ma + es;
-            let mut best_from = 0i32;
+            let es = emit_i[i - o];
+            let mut b = zscore + t_bg_ma + es;
+            let mut from = 0i32;
             let stay = p[r] + t_ma_ma + es;
-            if stay > best {
-                best = stay;
-                best_from = r as i32;
+            if stay > b {
+                b = stay;
+                from = r as i32;
             }
-
-            let n_ins = max_ins.min(o - 1);
-            let n_del = max_del.min(o - 1);
-
-            // This order's match score o and o + 1 columns back. Insertion k
-            // reads it o + k and o + k + 1 columns back, so each iteration
-            // loads one new value and reuses the previous one.
-            let parent_o = back(o, o);
-            let parent_o1 = back(o, o + 1);
-            let mut nearer = parent_o1;
-            for k in 1..=n_ins {
-                let row = r + k;
-                let per = o + k;
-                let pr = p[row];
-                let exit = pr + t_in_ma + es;
-                if exit > best {
-                    best = exit;
-                    best_from = row as i32;
-                }
-                let further = back(o, per + 1);
-                let mut v = pr;
-                v -= further;
-                v += nearer;
-                v -= emit_back(per, o);
-                v += emit(per);
-                c[row] = v;
-                nearer = further;
-            }
-
-            for k in 1..=n_del {
-                let row = r + n_ins + k;
-                let del_order = o - k;
-                let e_order = 2 * o - k;
-                let pr = p[row];
-                let exit = pr + t_de_ma + es;
-                if exit > best {
-                    best = exit;
-                    best_from = row as i32;
-                }
-                let mut v = pr;
-                v -= parent_o1;
-                v += parent_o;
-                v -= emit_back(del_order, o);
-                v += emit_back(del_order, k);
-                v -= emit_back(e_order, k);
-                v += emit(e_order);
-                c[row] = v;
-            }
-
-            c[r] = best;
-            hist_cur[o] = best;
-            ct[o] = best_from;
-            r += 1 + n_ins + n_del;
-            o += 1;
+            best[o] = b;
+            best_from[o] = from;
+            order_es[o] = es;
         }
-        debug_assert!(n_orders + 1 < max_period || r == cpc);
-        hist_cur[0] = c[0];
+
+        // Pass 2: the insertion and deletion rows, whose exits can still
+        // raise their match row (after its own scores, as in the general
+        // path). Order 1 has none.
+        if max_ins + max_del > 0 {
+            for o in 2..=n_orders {
+                let n_ins = max_ins.min(o - 1);
+                let n_del = max_del.min(o - 1);
+                let r = match_rows[o];
+                let es = order_es[o];
+                let h_o = &history[o * stride..(o + 1) * stride];
+                if n_ins >= LANES || n_del >= LANES {
+                    let order_cells = SteadyOrder {
+                        seq,
+                        i,
+                        o,
+                        r,
+                        cur,
+                        n_ins,
+                        n_del,
+                        es,
+                        t_in_ma,
+                        t_de_ma,
+                        h_o,
+                        pe,
+                    };
+                    order_cells.fill(p, c, &mut best[o], &mut best_from[o]);
+                    continue;
+                }
+                // Fewer cells than a block: one at a time, inline.
+                let at_o = against(seq[i - o]);
+                let mut b = best[o];
+                let mut from_row = best_from[o];
+                for k in 1..=n_ins {
+                    let row = r + k;
+                    let pr = p[row];
+                    let exit = pr + t_in_ma + es;
+                    if exit > b {
+                        b = exit;
+                        from_row = row as i32;
+                    }
+                    let mut v = pr;
+                    v -= h_o[cur - o - k - 1];
+                    v += h_o[cur - o - k];
+                    v -= at_o[i - 2 * o - k];
+                    v += emit_i[i - o - k];
+                    c[row] = v;
+                }
+                if n_del > 0 {
+                    let parent_o = h_o[cur - o];
+                    let parent_o1 = h_o[cur - o - 1];
+                    let by_o = pe.from(seq[i - o]);
+                    let by_2o = pe.from(seq[i - 2 * o]);
+                    for k in 1..=n_del {
+                        let row = r + n_ins + k;
+                        let pr = p[row];
+                        let exit = pr + t_de_ma + es;
+                        if exit > b {
+                            b = exit;
+                            from_row = row as i32;
+                        }
+                        let mut v = pr;
+                        v -= parent_o1;
+                        v += parent_o;
+                        v -= at_o[i - 2 * o + k];
+                        v += by_o[i - k];
+                        v -= by_2o[i - k];
+                        v += emit_i[i - 2 * o + k];
+                        c[row] = v;
+                    }
+                }
+                best[o] = b;
+                best_from[o] = from_row;
+            }
+        }
+
+        // Pass 3: the match rows, their history and their tracebacks.
+        for o in 1..=n_orders {
+            c[match_rows[o]] = best[o];
+            history[o * stride + cur] = best[o];
+            ct[o] = best_from[o];
+        }
+        c[0] = bg;
+        ct[0] = bg_from;
+        history[cur] = bg;
     }
 
     /// Like [`calculate_current_column`](Self::calculate_current_column) with
@@ -783,8 +1348,8 @@ impl UModel {
         let desc: &[Cell] = &m.cell_descriptions[..cpc];
         let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
         debug_assert_eq!(prev + 1, cur);
-        let hrows = m.max_period + 1;
-        let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, hrows, m.length);
+        let stride = m.length + 1;
+        let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, stride, m.length);
         let p: &[f32] = cols.p;
 
         for (row, &d) in desc.iter().enumerate() {
@@ -1054,6 +1619,34 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    /// take_exits keeps the first strictly greater exit, as one comparison
+    /// per cell does: ties keep the earlier row, and -0.0 does not beat 0.0.
+    #[test]
+    fn take_exits_keeps_the_first_strictly_greater() {
+        let one_at_a_time = |exits: &[f32], mut best: f32, mut from: i32| {
+            for (l, &e) in exits.iter().enumerate() {
+                if e > best {
+                    best = e;
+                    from = 10 + l as i32;
+                }
+            }
+            (best.to_bits(), from)
+        };
+        let cases: [(&[f32], f32); 6] = [
+            (&[1.0, 3.0, 3.0, 2.0], 0.0),
+            (&[3.0, 1.0, 3.0, 3.0], 0.0),
+            (&[2.0, 2.0, 2.0, 2.0], 2.0),
+            (&[0.0, -0.0, 0.0, -0.0], -0.0),
+            (&[-0.0, 0.0, 1.0, 1.0], -1.0),
+            (&[5.0], 4.0),
+        ];
+        for (exits, start) in cases {
+            let (mut best, mut from) = (start, -1);
+            take_exits(exits, &mut best, &mut from, 10);
+            assert_eq!((best.to_bits(), from), one_at_a_time(exits, start, -1), "{exits:?} from {start}");
+        }
+    }
+
     /// The steady-state column gives the same scores and tracebacks, bit for
     /// bit, as the general path, for small and large periods, with indel
     /// counts below and above the order, with many states (13,796 for the
@@ -1061,10 +1654,16 @@ mod tests {
     #[test]
     fn steady_columns_match_general_path() {
         // (max period, insertions, deletions, sequence length)
+        // Shapes on both sides of use_blocked_kernel, with exact blocks and
+        // with remainders.
         let shapes = [
             (2, 0, 0, 300),
             (8, 3, 3, 400),
+            (60, 3, 2, 500),
+            (40, 5, 2, 400),
             (12, 20, 20, 400),
+            (40, 4, 4, 400),
+            (50, 9, 5, 500),
             (31, 10, 10, 700),
             (101, 10, 10, 1200),
             (300, 40, 8, 1400),

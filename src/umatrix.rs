@@ -91,9 +91,11 @@ pub struct UMatrix {
     /// Every row of the previous and the current column: column `c` is slot
     /// `c % 2`, `[slot * cells_per_column, (slot + 1) * cells_per_column)`.
     pub full_columns: Vec<f32>,
-    /// Background and match rows of every column, `history_rows()` floats per
-    /// column indexed by order (slot 0 is the background row), `length + 1`
-    /// columns. Written when a column is complete.
+    /// Background and match rows of every column, stored by order: order `o`
+    /// (0 is the background row) of column `c` is at
+    /// `o * history_stride() + c`. `history_rows()` orders of `length + 1`
+    /// columns. Written when a column is complete. Order-major so that the
+    /// look-backs of one order's indel cells are contiguous.
     pub history: Vec<f32>,
     /// The row of each order's match cell, `max_period` entries; entry 0 is
     /// the background row.
@@ -114,6 +116,11 @@ pub struct UMatrix {
     /// Per-column best row, filled by [`UMatrix::calculate_traceback`].
     /// `length + 2` entries, zeroed at construction and never reset.
     pub traceback: Vec<i32>,
+
+    /// How many times [`restart_matrix`](Self::restart_matrix) has run: a
+    /// new value means a new window, so anything cached for the previous
+    /// window's sequence is stale.
+    pub restarts: u64,
 
     /// Where every cell of a column is past its warm-up, so that
     /// `UModel::calculate_current_column` can take its steady-state path.
@@ -212,6 +219,7 @@ impl UMatrix {
             total_score_adjustment: 0.0,
             traceback: Vec::new(),
             steady: SteadyState::default(),
+            restarts: 0,
         };
         m.create_matrix();
         m
@@ -227,6 +235,12 @@ impl UMatrix {
     #[inline(always)]
     pub fn history_rows(&self) -> usize {
         self.max_period + 1
+    }
+
+    /// Distance in `history` between orders (`length + 1` columns).
+    #[inline(always)]
+    pub fn history_stride(&self) -> usize {
+        self.length + 1
     }
 
     /// Whether every row of column `col` is kept: the previous or the
@@ -259,7 +273,7 @@ impl UMatrix {
     /// `col`.
     #[inline(always)]
     pub fn history_at(&self, col: usize, order: usize) -> f32 {
-        self.history[col * self.history_rows() + order]
+        self.history[order * self.history_stride() + col]
     }
 
     /// Copies the background and match rows of column `col`, which must be
@@ -267,12 +281,11 @@ impl UMatrix {
     #[inline]
     pub fn record_history(&mut self, col: usize) {
         let n = self.cells_per_column;
-        let h = self.history_rows();
+        let stride = self.history_stride();
         let slot = col & 1;
         let full = &self.full_columns[slot * n..(slot + 1) * n];
-        let dst = &mut self.history[col * h..col * h + self.match_rows.len()];
-        for (d, &r) in dst.iter_mut().zip(&self.match_rows) {
-            *d = full[r];
+        for (o, &r) in self.match_rows.iter().enumerate() {
+            self.history[o * stride + col] = full[r];
         }
     }
 
@@ -373,12 +386,23 @@ impl UMatrix {
         self.last_score_adjustment = self.previous_score_column()[0] * -1.0f32;
         self.total_score_adjustment += self.last_score_adjustment;
 
-        // for (int i = 0; i < length; ++i): int compared with unsigned long long.
-        let mut i: i32 = 0;
-        while (i as i64 as u64) < self.length as u64 {
-            let c = self.previous_column(i + 1);
-            self.adjust_column(c, self.last_score_adjustment);
-            i += 1;
+        // for (int i = 0; i < length; ++i) over previous_column(i + 1): that
+        // is every column 0..length once (current_column_index <= length),
+        // so each order's row is adjusted in one pass. Every score gets the
+        // same single addition as column by column.
+        let adj = self.last_score_adjustment;
+        let stride = self.history_stride();
+        for o in 0..self.history_rows() {
+            for v in &mut self.history[o * stride..o * stride + self.length] {
+                *v += adj;
+            }
+        }
+        for c in [self.previous_column_index, self.current_column_index] {
+            if c < self.length {
+                for v in self.score_column_mut(c) {
+                    *v += adj;
+                }
+            }
         }
     }
 
@@ -387,11 +411,12 @@ impl UMatrix {
     /// other row = `NEG_INF`.
     pub fn adjust_score_to_zero_from(&mut self, starting_at: i32, number_of_columns: i32) {
         let h = self.history_rows();
+        let stride = self.history_stride();
         for i in 0..number_of_columns {
             let p = (i + starting_at) as usize;
-            let hist = &mut self.history[p * h..(p + 1) * h];
-            hist.fill(NEG_INF_F32);
-            hist[0] = 0.0;
+            for o in 0..h {
+                self.history[o * stride + p] = if o == 0 { 0.0 } else { NEG_INF_F32 };
+            }
             if self.is_full_column(p) {
                 let col = self.score_column_mut(p);
                 for v in col.iter_mut().skip(1) {
@@ -406,8 +431,9 @@ impl UMatrix {
     pub fn adjust_column(&mut self, column: i32, adjustment: f32) {
         let c = column as usize;
         let h = self.history_rows();
-        for v in &mut self.history[c * h..(c + 1) * h] {
-            *v += adjustment;
+        let stride = self.history_stride();
+        for o in 0..h {
+            self.history[o * stride + c] += adjustment;
         }
         if self.is_full_column(c) {
             for v in self.score_column_mut(c) {
@@ -526,12 +552,15 @@ impl UMatrix {
     /// the current one, and zeroes column 0 of both matrices. Other columns
     /// and `traceback` are left as they are.
     pub fn restart_matrix(&mut self) {
+        self.restarts = self.restarts.wrapping_add(1);
         self.current_column_index = 1;
         self.previous_column_index = 0;
 
         self.score_column_mut(0).fill(0.0);
-        let h = self.history_rows();
-        self.history[..h].fill(0.0);
+        let stride = self.history_stride();
+        for o in 0..self.history_rows() {
+            self.history[o * stride] = 0.0;
+        }
         let tbr = self.traceback_rows();
         self.traceback_matrix[..tbr].fill(0);
     }

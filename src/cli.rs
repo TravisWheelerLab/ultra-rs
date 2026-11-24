@@ -1445,9 +1445,10 @@ impl Settings {
     /// The C++ counts a score for every model state in every column of a
     /// window. This port keeps every state only for two columns and, for
     /// the rest, the background and match scores and the traceback entries,
-    /// `max_period + 1` of each per column (see `umatrix`), so "DP matrix
-    /// cells" and "Total size" are computed for that layout. The other lines
-    /// are the C++ ones.
+    /// `max_period + 1` of each per column (see `umatrix`), plus, for models
+    /// that use the blocked steady-state kernel, ten emission scores per
+    /// window position (see `umodel`), so "DP matrix cells" and "Total size"
+    /// are computed for that layout. The other lines are the C++ ones.
     pub fn memory_usage_string(&mut self) -> String {
         let num_states = self.calculate_num_states();
         // All the C++ arithmetic here is on 64-bit integers that may wrap.
@@ -1459,6 +1460,13 @@ impl Settings {
             .wrapping_mul(total_window as u64)
             .wrapping_mul(2)
             .wrapping_add((num_states as u64).wrapping_mul(2));
+        // The blocked steady-state kernel also keeps emission scores by
+        // window position.
+        if crate::umodel::uses_blocked_kernel(self.max_insert as usize, self.max_delete as usize) {
+            dp_size = dp_size.wrapping_add(
+                crate::umodel::POSITION_EMISSION_ARRAYS.wrapping_mul(total_window as u64),
+            );
+        }
         let mut s = String::new();
         s.push_str("----------------------------\n");
         s.push_str(&format!("Maximum repeat period: {}\n", self.max_period));
@@ -1787,8 +1795,10 @@ mod tests {
         s.assign_settings();
         let text = s.memory_usage_string();
         // 101 rows (max period 100, plus the background) of scores and of
-        // tracebacks over a 100,200-column window, plus 2 x 1,970 states.
-        let per_thread: u64 = 2 * 101 * 100_200 + 2 * 1_970;
+        // tracebacks over a 100,200-column window, plus 2 x 1,970 states,
+        // plus ten emission scores per window position (10 insertion and 10
+        // deletion states use the blocked kernel).
+        let per_thread: u64 = 2 * 101 * 100_200 + 2 * 1_970 + 10 * 100_200;
         assert!(text.contains(&format!("DP matrix cells: {per_thread}\n")), "{text}");
         // Four bytes each, three threads, plus 1,024 windows of 100,200 bytes.
         let total = per_thread * 3 * 4 + 1_024 * 100_200;
