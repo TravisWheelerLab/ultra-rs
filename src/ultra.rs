@@ -139,6 +139,34 @@ pub fn compare_repeat_order(lhs: &RepeatRegion, rhs: &RepeatRegion) -> bool {
     lhs.sequence_start > rhs.sequence_start
 }
 
+/// The order [`Ultra::output_repeats`] takes repeats in, outside
+/// upstream-compat mode: `Less` when `lhs` is taken first. It is the order of
+/// [`compare_repeat_order`] (sequence ID, then start) with its ties broken:
+/// by period, then longest first, then by read ID.
+///
+/// `compare_repeat_order` leaves repeats with one start tied, and the sort
+/// that uses it is not stable, so which of them came first depended on what
+/// else was being sorted: a run with `--disable_streaming_out` could join or
+/// write them in another order than a streaming run. Two repeats from one
+/// window differ in start or period, because each starts one period and one
+/// column before its first repeat column. A joined repeat keeps the start,
+/// period and read ID of its first piece, so a streaming run that puts it
+/// back to wait sorts it by the same three.
+///
+/// Two repeats with the same start and period come from two windows that
+/// both cover that start, so it lies in their overlap. Longest first makes
+/// the longer one the first piece of their join, which keeps it whole (see
+/// [`joint_repeat_region`]). They are next to each other in this order, so
+/// they are joined to each other before either is joined to anything else.
+pub fn repeat_output_order(lhs: &RepeatRegion, rhs: &RepeatRegion) -> std::cmp::Ordering {
+    lhs.sequence_id
+        .cmp(&rhs.sequence_id)
+        .then(lhs.sequence_start.cmp(&rhs.sequence_start))
+        .then(lhs.repeat_period.cmp(&rhs.repeat_period))
+        .then(rhs.repeat_length.cmp(&lhs.repeat_length))
+        .then(lhs.read_id.cmp(&rhs.read_id))
+}
+
 /// C++ `Ultra`.
 pub struct Ultra {
     pub settings: Settings,
@@ -912,10 +940,17 @@ impl Ultra {
             });
     }
 
-    /// C++ `SortRepeatRegions`: libstdc++ `std::sort` with
-    /// [`compare_repeat_order`]; the order of tied repeats matters.
+    /// C++ `SortRepeatRegions`: puts the repeat to take first at the back.
+    /// In upstream-compat mode this is libstdc++ `std::sort` with
+    /// [`compare_repeat_order`], where the order of tied repeats matters and
+    /// depends on the arrangement before the sort. Otherwise the order is
+    /// [`repeat_output_order`], reversed.
     pub fn sort_repeat_regions(&mut self) {
-        std_sort(&mut self.out_repeats, |a, b| compare_repeat_order(a, b));
+        if self.settings.upstream_compat {
+            std_sort(&mut self.out_repeats, |a, b| compare_repeat_order(a, b));
+        } else {
+            self.out_repeats.sort_by(|a, b| repeat_output_order(b, a));
+        }
     }
 
     /// C++ `Coverage`.
@@ -945,6 +980,42 @@ mod tests {
         assert!(!compare_repeat_order(&a, &b));
         assert!(compare_repeat_order(&c, &b));
         assert!(!compare_repeat_order(&a, &a));
+    }
+
+    /// Repeats with one start are taken by period, then longest first, then
+    /// by read ID, whatever order the vector held them in.
+    #[test]
+    fn repeat_output_order_breaks_ties() {
+        use std::cmp::Ordering::{Equal, Less};
+        let piece = |start: u64, period: i32, length: u64, read_id: u64| {
+            let mut r = region(1, start, read_id);
+            r.repeat_period = period;
+            r.repeat_length = length;
+            r
+        };
+        let short = piece(50, 3, 20, 4);
+        let long = piece(50, 3, 90, 5);
+        let other_period = piece(50, 2, 10, 5);
+        let later = piece(51, 2, 500, 0);
+        assert_eq!(repeat_output_order(&long, &short), Less);
+        assert_eq!(repeat_output_order(&other_period, &long), Less);
+        assert_eq!(repeat_output_order(&short, &later), Less);
+        assert_eq!(repeat_output_order(&short, &piece(50, 3, 20, 5)), Less);
+        assert_eq!(repeat_output_order(&short, &short), Equal);
+        assert_eq!(repeat_output_order(&piece(50, 9, 1, 9), &region(2, 0, 0)), Less);
+
+        let mut s = library_settings();
+        s.suppress_out = true;
+        // The vector after the sort: the repeat to take first is at the back.
+        let sorted = |arrangement: [&Box<RepeatRegion>; 4]| {
+            let mut ultra = Ultra::new(&s);
+            ultra.out_repeats = arrangement.into_iter().cloned().collect();
+            ultra.sort_repeat_regions();
+            ultra.out_repeats.iter().map(|r| (r.sequence_start, r.repeat_period, r.repeat_length)).collect::<Vec<_>>()
+        };
+        let want = vec![(51, 2, 500), (50, 3, 20), (50, 3, 90), (50, 2, 10)];
+        assert_eq!(sorted([&short, &long, &other_period, &later]), want);
+        assert_eq!(sorted([&later, &other_period, &long, &short]), want);
     }
 
     fn library_settings() -> Settings {

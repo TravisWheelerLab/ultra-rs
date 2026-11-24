@@ -1,7 +1,7 @@
 //! End-to-end checks of bugs fixed in this port (the C++ has them): joins
-//! across window boundaries, masking before the first header, tuning runs
-//! emptying the -o file, a closed stdout, and non-UTF-8 arguments. Needs no
-//! C++ binary.
+//! across window boundaries, output that depended on when repeats were
+//! written, masking before the first header, tuning runs emptying the -o
+//! file, a closed stdout, and non-UTF-8 arguments. Needs no C++ binary.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -95,6 +95,155 @@ fn a_repeat_across_a_window_boundary_keeps_its_counts_and_score() {
     let compat = rows(&input, &["--win_size", "1000", "--overlap", "100"], true);
     assert_eq!(compat.len(), 1);
     assert_eq!(&compat[0][7..10], ["0", "0", "0"]);
+}
+
+/// What ultra writes to stdout for `args` and `input`, outside compat mode.
+fn ultra_stdout(args: &[&str], input: &Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_ultra"))
+        .args(args)
+        .arg(input)
+        .env_remove("ULTRA_UPSTREAM_COMPAT")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// A repeat that starts in a window overlap is found by both windows, with
+/// one start. The two pieces tie in the order the join takes repeats in, and
+/// the join treated its first and second piece differently, so the record
+/// depended on how the sort happened to arrange them. That differed between
+/// a run that writes repeats as it goes and one that writes them all at the
+/// end. The test compares four run orders.
+#[test]
+fn output_does_not_depend_on_when_repeats_are_written() {
+    let d = dir("run_order");
+    let mut rng = Rng(0x5eed_1234_9876_0004);
+    // Windows of 250 bases with an overlap of 40. Each array starts 30 bases
+    // before a window boundary and ends 60 after it.
+    let mut s = Vec::new();
+    for boundary in (250..=750_000).step_by(250) {
+        let filler = rng.bases(boundary - 30 - s.len());
+        s.extend(filler);
+        let unit_len = 2 + (rng.next() % 4) as usize;
+        let unit = rng.bases(unit_len);
+        for _ in 0..90 / unit_len {
+            s.extend_from_slice(&unit);
+        }
+    }
+    s.extend(rng.bases(100));
+    let input = d.join("starts_in_overlaps.fa");
+    fs::write(&input, [b">s\n".as_slice(), &s, b"\n"].concat()).unwrap();
+
+    // The record lines (the lines before them name the thread count).
+    let run = |order: &[&str]| -> Vec<String> {
+        let fixed = ["--tsv", "-c", "--hs", "--win_size", "250", "--overlap", "40", "-p", "6"];
+        let text = ultra_stdout(&[order, &fixed].concat(), &input);
+        text.lines().filter(|l| l.starts_with("s\t")).map(str::to_string).collect()
+    };
+    let streamed = run(&["-t", "1"]);
+    // A streaming run starts writing once it holds more than 2,000
+    // repeats, so this one writes some before it has read the last window.
+    assert!(streamed.len() > 2500, "{} records", streamed.len());
+    for order in [
+        &["-t", "1", "--disable_streaming_out"][..],
+        &["-t", "4", "--windows", "4"],
+        &["-t", "7", "--windows", "9", "--disable_streaming_out"],
+    ] {
+        assert!(run(order) == streamed, "output with {order:?} differs from -t 1");
+    }
+}
+
+/// One record of `--json -c --show_trace --show_delta`.
+struct JsonRecord {
+    start: usize,
+    length: usize,
+    period: usize,
+    score: f64,
+    insertions: usize,
+    deletions: usize,
+    traceback: String,
+    deltas: Vec<f64>,
+}
+
+impl JsonRecord {
+    /// Score minus the sum of the score changes.
+    fn score_beyond_deltas(&self) -> f64 {
+        self.score - self.deltas.iter().sum::<f64>()
+    }
+}
+
+fn json_records(input: &Path, args: &[&str]) -> Vec<JsonRecord> {
+    let fixed = ["-t", "1", "--json", "-c", "--hs", "--show_trace", "--show_delta"];
+    let text = ultra_stdout(&[&fixed, args].concat(), input);
+    let mut records = Vec::new();
+    for record in text.split("{\"SequenceName\"").skip(1) {
+        // The value on the first line that starts with the key. The
+        // subrepeats' keys do not start a line.
+        let field = |key: &str| -> &str {
+            let tag = format!("\n\"{key}\": ");
+            let from = record.find(&tag).unwrap_or_else(|| panic!("no {key} in {record}")) + tag.len();
+            let line = record[from..].lines().next().unwrap();
+            line.trim_end_matches(|c| ",}]\"".contains(c)).trim_start_matches(|c| "[\"".contains(c))
+        };
+        records.push(JsonRecord {
+            start: field("Start").parse().unwrap(),
+            length: field("Length").parse().unwrap(),
+            period: field("Period").parse().unwrap(),
+            score: field("Score").parse().unwrap(),
+            insertions: field("Insertions").parse().unwrap(),
+            deletions: field("Deletions").parse().unwrap(),
+            traceback: field("Traceback").to_string(),
+            deltas: field("PositionScoreDeltas").split(',').map(|x| x.parse().unwrap()).collect(),
+        });
+    }
+    records
+}
+
+/// A record joined across a window boundary describes one alignment: its
+/// traceback shows the insertions and deletions it counts, and its score
+/// differs from the sum of its score changes by as much as it does when one
+/// window holds the whole repeat. The join used to stitch the counts and the
+/// score at the end of the first piece, and the traceback and the score
+/// changes at the start of the second.
+#[test]
+fn a_joined_record_describes_one_alignment() {
+    let d = dir("one_alignment");
+    let mut rng = Rng(0x5eed_1234_9876_0005);
+    let mut s = rng.bases(300);
+    for _ in 0..24 {
+        let unit_len = 7 + (rng.next() % 9) as usize;
+        let unit = rng.bases(unit_len);
+        s.extend(rng.noisy(&unit, 600 / unit_len));
+        s.extend(rng.bases(300));
+    }
+    let input = d.join("arrays.fa");
+    fs::write(&input, [b">s\n".as_slice(), &s, b"\n"].concat()).unwrap();
+
+    // The default window is longer than the sequence.
+    let whole = json_records(&input, &[]);
+    let split = json_records(&input, &["--win_size", "1000", "--overlap", "100"]);
+    let mut joined_and_compared = 0;
+    for r in &split {
+        let at = format!("the record at {}", r.start);
+        assert_eq!(r.traceback.len(), r.length, "{at}");
+        assert_eq!(r.deltas.len(), r.length, "{at}");
+        assert_eq!(r.traceback.matches('I').count(), r.insertions, "{at}: {}", r.traceback);
+        assert_eq!(r.traceback.matches('D').count(), r.deletions, "{at}: {}", r.traceback);
+
+        // Windows start every 1,000 bases and reach 100 back, so a record
+        // that starts more than 100 before such a position and ends after
+        // it was joined.
+        let end = r.start + r.length;
+        let joined = (1..).map(|k| k * 1000).take_while(|&b| b < end).any(|b| r.start + 100 < b);
+        let same = |w: &&JsonRecord| (w.start, w.length, w.period) == (r.start, r.length, r.period);
+        if let (true, Some(w)) = (joined, whole.iter().find(same)) {
+            let (a, b) = (r.score_beyond_deltas(), w.score_beyond_deltas());
+            assert!((a - b).abs() < 0.05, "{at}: {a} joined, {b} in one window");
+            joined_and_compared += 1;
+        }
+    }
+    assert!(joined_and_compared >= 8, "{joined_and_compared} joined records compared");
 }
 
 /// A repeat of another period inside a long-period repeat sorts between its

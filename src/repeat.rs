@@ -42,8 +42,26 @@ struct LogoWalk {
     mismatches: i32,
     insertions: i32,
     deletions: i32,
-    /// The three counts by repeat position (see `RepeatRegion::events`).
-    events: Vec<[u32; 3]>,
+    /// The substitutions, insertions and deletions the walk counted (see
+    /// `RepeatRegion::events`). Empty for a walk with the indel test:
+    /// `create_logo` uses only the logo of that walk.
+    events: Vec<RepeatEvent>,
+}
+
+/// The kind of a [`RepeatEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Substitution,
+    Insertion,
+    Deletion,
+}
+
+/// One substitution, or one base of an insertion or deletion, at `position`
+/// bases after the start of its repeat (see [`RepeatRegion::events`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepeatEvent {
+    pub position: u64,
+    pub kind: EventKind,
 }
 
 /// Byte `i` of `s`, or 0 when `i` is at or past the end. Mirrors
@@ -134,13 +152,18 @@ pub struct RepeatRegion {
     pub mismatches: i32,
     pub insertions: i32,
     pub deletions: i32,
-    /// Where `mismatches`, `insertions` and `deletions` happened: entry `a`
-    /// holds the three counts the counting walk of [`create_logo`] made at
-    /// position `a` of the repeat. Lets [`joint_repeat_region`] count a
-    /// joined region. `None` for regions that were not counted.
+    /// Where the counting walk of [`create_logo`] found the `mismatches`,
+    /// `insertions` and `deletions`: one entry for each substitution, at the
+    /// position of the base, and `n` entries for an insertion or deletion of
+    /// `n`, at the `n` positions from the traceback column that holds the
+    /// indel's cell. [`store_traceback`] writes the indel's `I` or `D`
+    /// characters at those positions. The entries are not sorted.
+    /// [`joint_repeat_region`] counts a joined region from them. `None` for
+    /// regions that were not counted.
     ///
     /// [`create_logo`]: RepeatRegion::create_logo
-    pub events: Option<Vec<[u32; 3]>>,
+    /// [`store_traceback`]: RepeatRegion::store_traceback
+    pub events: Option<Vec<RepeatEvent>>,
 
     pub overlap_correction: i32,
 
@@ -256,7 +279,9 @@ impl RepeatRegion {
         self.mismatches += walk.mismatches;
         self.insertions += walk.insertions;
         self.deletions += walk.deletions;
-        self.events = Some(walk.events.clone());
+        let mut events = walk.events;
+        events.shrink_to_fit();
+        self.events = Some(events);
 
         let mut logo = walk.logo;
         if !upstream_consensus {
@@ -282,13 +307,18 @@ impl RepeatRegion {
         let mut mismatches: i32 = 0;
         let mut insertions: i32 = 0;
         let mut deletions: i32 = 0;
-        let mut events = vec![[0u32; 3]; self.repeat_length as usize];
+        let mut events: Vec<RepeatEvent> = Vec::new();
         let window_start = self.window_start;
-        // Adds `n` to count `kind` (0 mismatch, 1 insertion, 2 deletion) at
-        // window position `at`.
-        let mut note = |at: u64, kind: usize, n: i32| {
-            if let Some(e) = at.checked_sub(window_start).and_then(|k| events.get_mut(k as usize)) {
-                e[kind] = e[kind].wrapping_add(n as u32);
+        // Records `n` events of `kind`, one at each of the `n` window
+        // positions from `at` on. Only the walk without the indel test
+        // records them: its counts are the ones the region keeps.
+        let mut note = |at: u64, kind: EventKind, n: i32| {
+            if test_indels {
+                return;
+            }
+            for j in 0..n.max(0) as u64 {
+                let position = at.wrapping_add(j).wrapping_sub(window_start);
+                events.push(RepeatEvent { position, kind });
             }
         };
 
@@ -381,12 +411,12 @@ impl RepeatRegion {
 
             if fdesc.cell_type == CT_INSERTION {
                 insertions += fdesc.indel_number;
-                note(fplace, 1, fdesc.indel_number);
+                note(fplace, EventKind::Insertion, fdesc.indel_number);
                 i = i.wrapping_add(fdesc.indel_number as i64 as u64);
                 fplace = fplace.wrapping_add(fdesc.indel_number as i64 as u64);
             } else if fdesc.cell_type == CT_DELETION {
                 deletions += fdesc.indel_number;
-                note(fplace, 2, fdesc.indel_number);
+                note(fplace, EventKind::Deletion, fdesc.indel_number);
                 bplace = bplace.wrapping_add(fdesc.indel_number as i64 as u64);
                 p += fdesc.indel_number;
             }
@@ -424,7 +454,7 @@ impl RepeatRegion {
             let idx = p as usize * NUM_SYMBOLS + s as usize;
             if s != sb {
                 mismatches += 1;
-                note(fplace, 0, 1);
+                note(fplace, EventKind::Substitution, 1);
                 logo[idx] += 1;
             } else {
                 logo[idx] += 4;
@@ -1270,14 +1300,24 @@ pub fn repeats_overlap(r1: &RepeatRegion, r2: &RepeatRegion, require_same_period
 /// window start; `r2`'s split positions are moved to where `r2` sits in the
 /// joined region.
 ///
-/// Counts and score: with `upstream_compat`, as the C++ does, the joined
-/// region has no substitutions, insertions or deletions and its score is the
-/// average of the two scores weighted by length, so a repeat that crosses a
-/// window boundary scores about the average of its pieces. Otherwise, when
-/// both regions were counted ([`RepeatRegion::events`]) and scored
-/// ([`RepeatRegion::scores`]), the joined region is `r1` extended by the part
-/// of `r2` past `r1`'s end: its counts are `r1`'s plus `r2`'s events there,
-/// and its score is `r1`'s plus `r2`'s per-position score changes there.
+/// With `upstream_compat` the join is the one the C++ makes. The sequence,
+/// traceback, score changes and logo numbers are `r1`'s up to the start of
+/// `r2` and `r2`'s from there. The joined region has no substitutions,
+/// insertions or deletions, and its score is the average of the two scores
+/// weighted by length, so a repeat that crosses a window boundary scores
+/// about the average of its pieces.
+///
+/// Otherwise the joined region is all of `r1` followed by the part of `r2`
+/// past `r1`'s end, and every field changes from `r1` to `r2` there: the four
+/// per-position fields, the counts (those of `r1`'s [`RepeatRegion::events`]
+/// and of `r2`'s past `r1`'s end, when both regions have them) and the score.
+/// When both regions have [`RepeatRegion::scores`], the score is the sum of
+/// the joined score changes after the first `period + 1`, plus what `r2`'s
+/// score has beyond that sum of its own score changes. Without them the
+/// score is the weighted average, and a joined region that is all of `r1`
+/// has `r1`'s score. When the two regions start at the same position, the
+/// longer one takes the place of `r1`, so both argument orders give the same
+/// result unless the regions are equally long.
 pub fn joint_repeat_region(
     r1: &RepeatRegion,
     r2: &RepeatRegion,
@@ -1285,6 +1325,12 @@ pub fn joint_repeat_region(
 ) -> Option<Box<RepeatRegion>> {
     if !repeats_overlap(r1, r2, false) {
         return None;
+    }
+    if !upstream_compat
+        && r1.sequence_start == r2.sequence_start
+        && r2.repeat_length > r1.repeat_length
+    {
+        return joint_repeat_region(r2, r1, false);
     }
 
     let mut joint = Box::new(RepeatRegion::new());
@@ -1299,19 +1345,23 @@ pub fn joint_repeat_region(
     // that case.
     let r2_inside = r2.sequence_start.wrapping_add(r2.repeat_length)
         <= r1.sequence_start.wrapping_add(r1.repeat_length);
-    // unsigned long narrowed to int.
-    let mut s1_seq_len: i32 = r2.sequence_start.wrapping_sub(r1.sequence_start) as i32;
-    let mut r2_skip: i32 = 0;
-    if r2_inside {
-        s1_seq_len = r1.repeat_length as i32;
-        r2_skip = r2.repeat_length as i32;
-    }
-    joint.repeat_length =
-        (s1_seq_len.wrapping_add((r2.repeat_length as i32).wrapping_sub(r2_skip))) as i64 as u64;
     let overlap: i32 = r1
         .sequence_start
         .wrapping_add(r1.repeat_length)
         .wrapping_sub(r2.sequence_start) as i32;
+    // Where r2 starts in the joint region. unsigned long narrowed to int.
+    let r2_offset: i32 = r2.sequence_start.wrapping_sub(r1.sequence_start) as i32;
+    let mut s1_seq_len: i32 = r2_offset;
+    let mut r2_skip: i32 = 0;
+    if r2_inside {
+        s1_seq_len = r1.repeat_length as i32;
+        r2_skip = r2.repeat_length as i32;
+    } else if !upstream_compat {
+        s1_seq_len = r1.repeat_length as i32;
+        r2_skip = overlap;
+    }
+    joint.repeat_length =
+        (s1_seq_len.wrapping_add((r2.repeat_length as i32).wrapping_sub(r2_skip))) as i64 as u64;
 
     joint.sequence_name = r1.sequence_name.clone();
     joint.sequence_id = r1.sequence_id;
@@ -1376,22 +1426,39 @@ pub fn joint_repeat_region(
     joint.region_score = (r1.region_score * pct_seq1) + (r2.region_score * pct_seq2);
 
     if !upstream_compat {
-        if let (Some(e1), Some(e2), Some(sc2)) = (&r1.events, &r2.events, &r2.scores) {
-            // r2 from r1's end on (nothing when r2 ends inside r1).
-            let past = (r1.sequence_start + r1.repeat_length).saturating_sub(r2.sequence_start) as usize;
-            let past = past.min(e2.len());
-            let mut events = e1.clone();
-            events.extend_from_slice(&e2[past..]);
-            let total = |k: usize| events.iter().fold(0u32, |a, e| a.wrapping_add(e[k])) as i32;
-            joint.mismatches = total(0);
-            joint.insertions = total(1);
-            joint.deletions = total(2);
+        // The score and the counts of the same pieces as the fields above:
+        // r1, then r2 without its first `r2_skip` positions.
+        let (kept, skipped) = (s1_seq_len as i64 as u64, r2_skip as i64 as u64);
+        if r2_inside {
+            joint.region_score = r1.region_score;
+        } else if let (Some(sc2), Some(joint_scores)) = (&r2.scores, &joint.scores) {
+            // `get_next_repeat` scores a region from its first repeat column
+            // to the column after its last one, or to its last column when
+            // it runs to the end of the window. The first `period + 1` score
+            // changes lead up to the first repeat column, and the last score
+            // change is the one into the last repeat column. So a score is
+            // the sum of the score changes from index `period + 1` on, plus
+            // an end term for the column after the repeat. The joined score
+            // is that sum over the joined score changes, plus r2's end term,
+            // because the joined region ends where r2 does.
+            let after_entry = |sc: &[f32], period: i32| -> f64 {
+                sc.iter().skip(period.max(0) as usize + 1).map(|&d| d as f64).sum()
+            };
+            let end_term = r2.region_score as f64 - after_entry(sc2, r2.repeat_period);
+            joint.region_score = (after_entry(joint_scores, r1.repeat_period) + end_term) as f32;
+        }
+        if let (Some(e1), Some(e2)) = (&r1.events, &r2.events) {
+            let mut events: Vec<RepeatEvent> =
+                e1.iter().copied().filter(|e| e.position < kept).collect();
+            events.extend(e2.iter().filter(|e| e.position >= skipped).map(|e| RepeatEvent {
+                position: e.position - skipped + kept,
+                kind: e.kind,
+            }));
+            let count = |kind: EventKind| events.iter().filter(|e| e.kind == kind).count() as i32;
+            joint.mismatches = count(EventKind::Substitution);
+            joint.insertions = count(EventKind::Insertion);
+            joint.deletions = count(EventKind::Deletion);
             joint.events = Some(events);
-            let mut score = r1.region_score;
-            for &d in &sc2[past.min(sc2.len())..] {
-                score += d;
-            }
-            joint.region_score = score;
         }
     }
 
@@ -1430,7 +1497,7 @@ pub fn joint_repeat_region(
             // where r2 sits in the joint region (-1 marks a removed split).
             // Upstream 1.2.2 appends them unshifted.
             let s = r2_splits[i];
-            splits.push(if s < 0 { s } else { s + s1_seq_len });
+            splits.push(if s < 0 { s } else { s + r2_offset });
             consensi.push(r2_consensi[i + 1].clone());
         }
     }
@@ -1459,54 +1526,130 @@ mod tests {
     //! reproduced by `dump` below; floats are printed as bit patterns.
     use super::*;
 
-    /// A joined region is r1 extended by the part of r2 past r1's end: its
-    /// counts and score add r2's events and score changes there. With
-    /// upstream_compat it has no counts and the length-weighted average
-    /// score, as in the C++.
-    #[test]
-    fn joint_region_counts_and_scores_the_union() {
-        let region = |start: u64, len: u64, score: f32, ev: &[(usize, [u32; 3])]| {
-            let mut r = RepeatRegion::new();
-            r.sequence_id = 1;
-            r.repeat_period = 2;
-            r.sequence_start = start;
-            r.repeat_length = len;
-            r.region_score = score;
-            r.scores = Some((0..len).map(|k| 0.5 + k as f32 * 0.25).collect());
-            let mut e = vec![[0u32; 3]; len as usize];
-            for &(at, v) in ev {
-                e[at] = v;
+    /// A region for the join tests: period 2, a score change of
+    /// `0.5 + 0.25 k` at position `k`, a traceback with `I` and `D` at its
+    /// insertion and deletion events, and logo numbers that count up from
+    /// `1000 * tag`.
+    fn counted_region(tag: i32, start: u64, len: u64, score: f32, ev: &[(u64, EventKind)]) -> RepeatRegion {
+        let mut r = RepeatRegion::new();
+        r.sequence_id = 1;
+        r.read_id = tag as u64;
+        r.repeat_period = 2;
+        r.sequence_start = start;
+        r.repeat_length = len;
+        r.region_score = score;
+        r.scores = Some((0..len).map(|k| 0.5 + k as f32 * 0.25).collect());
+        r.sequence = (0..len).map(|k| b"ACGT"[((start + k) % 4) as usize]).collect();
+        r.traceback = vec![b'.'; len as usize];
+        r.logo_numbers = Some((0..=len as i32).map(|k| 1000 * tag + k).collect());
+        let mut events = Vec::new();
+        for &(position, kind) in ev {
+            events.push(RepeatEvent { position, kind });
+            match kind {
+                EventKind::Substitution => r.mismatches += 1,
+                EventKind::Insertion => {
+                    r.insertions += 1;
+                    r.traceback[position as usize] = b'I';
+                }
+                EventKind::Deletion => {
+                    r.deletions += 1;
+                    r.traceback[position as usize] = b'D';
+                }
             }
-            r.mismatches = e.iter().map(|x| x[0] as i32).sum();
-            r.insertions = e.iter().map(|x| x[1] as i32).sum();
-            r.deletions = e.iter().map(|x| x[2] as i32).sum();
-            r.events = Some(e);
-            r
-        };
+        }
+        r.events = Some(events);
+        r
+    }
+
+    /// A joined region is all of r1 followed by the part of r2 past r1's
+    /// end, in every field: the counts, the score, and the sequence,
+    /// traceback, score changes and logo numbers. With upstream_compat it
+    /// has no counts, the length-weighted average score, and per-position
+    /// fields stitched at r2's start, as in the C++.
+    #[test]
+    fn joint_region_is_stitched_at_one_point() {
+        use EventKind::{Deletion, Insertion, Substitution};
         // r1 = [100, 120), r2 = [115, 130): r2's part past r1 is its last 10.
-        let r1 = region(100, 20, 30.0, &[(3, [1, 0, 0]), (17, [0, 2, 0])]);
-        let r2 = region(115, 15, 25.0, &[(2, [1, 0, 0]), (6, [0, 0, 1]), (12, [1, 1, 0])]);
+        // r2 has an insertion of 3 at its positions 4..7, which r1's end cuts.
+        let r1 = counted_region(1, 100, 20, 30.0, &[(3, Substitution), (16, Insertion), (17, Insertion)]);
+        let r2 = counted_region(
+            2,
+            115,
+            15,
+            25.0,
+            &[(2, Substitution), (4, Insertion), (5, Insertion), (6, Insertion), (9, Deletion), (12, Substitution)],
+        );
         let j = joint_repeat_region(&r1, &r2, false).unwrap();
         assert_eq!(j.repeat_length, 30);
-        assert_eq!((j.mismatches, j.insertions, j.deletions), (2, 3, 1));
-        let tail: f32 = (5..15).map(|k| 0.5 + k as f32 * 0.25).fold(0.0, |a, d| a + d);
-        let mut want = 30.0f32;
-        for k in 5..15 {
-            want += 0.5 + k as f32 * 0.25;
+        assert_eq!((j.mismatches, j.insertions, j.deletions), (2, 4, 1));
+        // The score: the joined score changes past the first period + 1,
+        // and what r2's score has beyond its own score changes past those.
+        let change = |k: u64| 0.5 + k as f64 * 0.25;
+        let r2_end_term = 25.0 - (3..15).map(change).sum::<f64>();
+        let want = (3..20).map(change).sum::<f64>() + (5..15).map(change).sum::<f64>() + r2_end_term;
+        assert!((j.region_score as f64 - want).abs() < 1e-3, "{} and {want}", j.region_score);
+
+        let mut traceback = r1.traceback.clone();
+        traceback.extend_from_slice(&r2.traceback[5..]);
+        assert_eq!(j.traceback, traceback);
+        assert_eq!(j.traceback.iter().filter(|&&c| c == b'I').count() as i32, j.insertions);
+        assert_eq!(j.traceback.iter().filter(|&&c| c == b'D').count() as i32, j.deletions);
+        let mut sequence = r1.sequence.clone();
+        sequence.extend_from_slice(&r2.sequence[5..]);
+        assert_eq!(j.sequence, sequence);
+        let scores = j.scores.as_ref().unwrap();
+        assert_eq!(scores[..20], r1.scores.as_ref().unwrap()[..]);
+        assert_eq!(scores[20..], r2.scores.as_ref().unwrap()[5..]);
+        // Score minus the sum of all the score changes is r2's end term
+        // minus r1's first three changes, as it is for a region from one
+        // window.
+        let sum = |v: &[f32]| v.iter().map(|&d| d as f64).sum::<f64>();
+        let gap = j.region_score as f64 - sum(scores);
+        assert!((gap - (r2_end_term - (0..3).map(change).sum::<f64>())).abs() < 1e-3, "{gap}");
+        let numbers: Vec<i32> = (1000..1020).chain(2005..2015).collect();
+        assert_eq!(j.logo_numbers.as_deref(), Some(&numbers[..]));
+        // The insertion and deletion events sit on the traceback's I and D.
+        for e in j.events.as_ref().unwrap() {
+            let c = j.traceback[e.position as usize];
+            match e.kind {
+                Substitution => {}
+                Insertion => assert_eq!(c, b'I'),
+                Deletion => assert_eq!(c, b'D'),
+            }
         }
-        assert_eq!(j.region_score, want);
-        assert!((want - (30.0 + tail)).abs() < 1e-3);
-        assert_eq!(j.events.as_ref().unwrap().len(), 30);
 
         let c = joint_repeat_region(&r1, &r2, true).unwrap();
         assert_eq!((c.mismatches, c.insertions, c.deletions), (0, 0, 0));
         let pct1 = 15.0f32 / 30.0;
         assert_eq!(c.region_score, 30.0 * pct1 + 25.0 * ((1.0f64 - pct1 as f64) as f32));
+        let mut traceback = r1.traceback[..15].to_vec();
+        traceback.extend_from_slice(&r2.traceback);
+        assert_eq!(c.traceback, traceback);
 
-        // r2 inside r1: r1's counts and score.
-        let inner = region(104, 10, 9.0, &[(5, [1, 1, 1])]);
+        // r2 inside r1: r1's counts, score and fields.
+        let inner = counted_region(3, 104, 10, 9.0, &[(5, Substitution), (6, Insertion), (7, Deletion)]);
         let k = joint_repeat_region(&r1, &inner, false).unwrap();
         assert_eq!((k.mismatches, k.insertions, k.deletions, k.region_score), (1, 2, 0, 30.0));
+        assert_eq!(k.traceback, r1.traceback);
+    }
+
+    /// Two regions with one start (a repeat that starts in a window overlap,
+    /// found by both windows) join to the longer one whichever comes first.
+    /// With upstream_compat the order matters, as in the C++.
+    #[test]
+    fn joining_regions_with_one_start_does_not_depend_on_their_order() {
+        use EventKind::{Insertion, Substitution};
+        let short = counted_region(1, 200, 12, 7.0, &[(4, Substitution), (9, Substitution)]);
+        let long = counted_region(2, 200, 30, 21.0, &[(5, Substitution), (20, Insertion)]);
+        let a = joint_repeat_region(&short, &long, false).unwrap();
+        let b = joint_repeat_region(&long, &short, false).unwrap();
+        assert_eq!(a, b);
+        assert_eq!((a.mismatches, a.insertions, a.deletions, a.region_score), (1, 1, 0, 21.0));
+        assert_eq!((&a.traceback, &a.scores, a.read_id), (&long.traceback, &long.scores, 2));
+
+        let a = joint_repeat_region(&short, &long, true).unwrap();
+        let b = joint_repeat_region(&long, &short, true).unwrap();
+        assert_ne!(a.read_id, b.read_id);
     }
     use crate::repeat_splitter::{validate_splits, SplitWindow};
     use crate::std_sort::std_sort;
