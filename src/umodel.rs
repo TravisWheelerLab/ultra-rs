@@ -51,56 +51,48 @@ fn previous_emission_score(
     v - b
 }
 
-/// The score matrix split around the current column, so the current column
-/// can be written while earlier and later columns are read.
+/// The current column (written) and the previous column (read) of the
+/// matrix, every row, plus the background and match rows of every column.
 struct ColumnSplit<'a> {
-    before: &'a [f32],
+    p: &'a [f32],
     c: &'a mut [f32],
-    after: &'a [f32],
+    history: &'a [f32],
+    desc: &'a [Cell],
+    history_rows: usize,
     cur: usize,
-    cpc: usize,
     length: usize,
 }
 
 impl<'a> ColumnSplit<'a> {
-    fn new(score_matrix: &'a mut [f32], cur: usize, cpc: usize, length: usize) -> Self {
-        let (before, rest) = score_matrix.split_at_mut(cur * cpc);
-        let (c, after) = rest.split_at_mut(cpc);
-        ColumnSplit {
-            before,
-            c,
-            after,
-            cur,
-            cpc,
-            length,
-        }
-    }
-
-    /// Column `col` (must not be the current column).
-    #[inline(always)]
-    fn column(&self, col: usize) -> &'a [f32] {
-        let (before, after): (&'a [f32], &'a [f32]) = (self.before, self.after);
-        if col < self.cur {
-            &before[col * self.cpc..(col + 1) * self.cpc]
-        } else {
-            let k = col - self.cur - 1;
-            &after[k * self.cpc..(k + 1) * self.cpc]
-        }
+    /// `full` is `UMatrix::full_columns`; the previous column is `cur - 1`.
+    fn new(
+        full: &'a mut [f32],
+        history: &'a [f32],
+        desc: &'a [Cell],
+        cur: usize,
+        history_rows: usize,
+        length: usize,
+    ) -> Self {
+        let cpc = desc.len();
+        let (slot0, slot1) = full.split_at_mut(cpc);
+        let (c, p) = if cur & 1 == 0 { (slot0, &*slot1) } else { (slot1, &*slot0) };
+        ColumnSplit { p, c, history, desc, history_rows, cur, length }
     }
 
     /// C++ `UMatrix::PreviousScore`, reading the current column live.
+    /// `row` is the background row or a match row.
     #[inline(always)]
     fn previous_score(&self, row: i32, d: i32) -> f32 {
         let mut s = NEG_INF_F32;
         if (d as i64 as u64) < self.length as u64 {
             let col = previous_column_of(self.cur, self.length, d) as usize;
             let row = row as usize;
-            s = if col < self.cur {
-                self.before[col * self.cpc + row]
-            } else if col == self.cur {
+            s = if col == self.cur {
                 self.c[row]
             } else {
-                self.after[(col - self.cur - 1) * self.cpc + row]
+                let cell = self.desc[row];
+                debug_assert!(cell.cell_type == CT_MATCH || cell.cell_type == CT_BACKGROUND);
+                self.history[col * self.history_rows + cell.order as usize]
             };
         }
         s
@@ -370,9 +362,10 @@ impl UModel {
 
         let desc: &[Cell] = &m.cell_descriptions[..cpc];
         let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
-        let cols = ColumnSplit::new(&mut m.score_matrix, cur, cpc, m.length);
-        // The previous column is never the current one (it is always cur - 1).
-        let p: &[f32] = cols.column(prev);
+        debug_assert_eq!(prev + 1, cur);
+        let hrows = m.max_period + 1;
+        let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, hrows, m.length);
+        let p: &[f32] = cols.p;
 
         for (row, &d) in desc.iter().enumerate() {
             match d.cell_type {
@@ -534,6 +527,7 @@ impl UModel {
             }
         }
 
+        m.record_history(cur);
         m.move_matrix_forward();
     }
 
@@ -587,11 +581,15 @@ impl UModel {
         let max_del = m.max_deletions;
 
         let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
-        let (before, rest) = m.score_matrix.split_at_mut(cur * cpc);
-        let c = &mut rest[..cpc];
-        let p = &before[(cur - 1) * cpc..];
-        // Row `r` of the column `d >= 1` columns back.
-        let back = |r: usize, d: usize| -> f32 { before[(cur - d) * cpc + r] };
+        let (slot0, slot1) = m.full_columns.split_at_mut(cpc);
+        let (c, p) = if cur & 1 == 0 { (slot0, &*slot1) } else { (slot1, &*slot0) };
+        let hrows = m.max_period + 1;
+        let (history, hist_rest) = m.history.split_at_mut(cur * hrows);
+        // This column's background and match rows, written as they finish.
+        let hist_cur = &mut hist_rest[..hrows];
+        // The background (`order` 0) or order-`order` match score of the
+        // column `d >= 1` columns back.
+        let back = |order: usize, d: usize| -> f32 { history[(cur - d) * hrows + order] };
 
         // diff[x][y] = mscore[x][y] - bscore[y]: the emission score of
         // symbol y against x, the same float as the general path computes.
@@ -645,6 +643,12 @@ impl UModel {
             let n_ins = max_ins.min(o - 1);
             let n_del = max_del.min(o - 1);
 
+            // This order's match score o and o + 1 columns back. Insertion k
+            // reads it o + k and o + k + 1 columns back, so each iteration
+            // loads one new value and reuses the previous one.
+            let parent_o = back(o, o);
+            let parent_o1 = back(o, o + 1);
+            let mut nearer = parent_o1;
             for k in 1..=n_ins {
                 let row = r + k;
                 let per = o + k;
@@ -654,16 +658,16 @@ impl UModel {
                     best = exit;
                     best_from = row as i32;
                 }
+                let further = back(o, per + 1);
                 let mut v = pr;
-                v -= back(r, per + 1);
-                v += back(r, per);
+                v -= further;
+                v += nearer;
                 v -= emit_back(per, o);
                 v += emit(per);
                 c[row] = v;
+                nearer = further;
             }
 
-            let parent_o1 = back(r, o + 1);
-            let parent_o = back(r, o);
             for k in 1..=n_del {
                 let row = r + n_ins + k;
                 let del_order = o - k;
@@ -685,11 +689,13 @@ impl UModel {
             }
 
             c[r] = best;
+            hist_cur[o] = best;
             ct[o] = best_from;
             r += 1 + n_ins + n_del;
             o += 1;
         }
         debug_assert_eq!(r, cpc);
+        hist_cur[0] = c[0];
 
         m.move_matrix_forward();
     }
@@ -721,8 +727,10 @@ impl UModel {
 
         let desc: &[Cell] = &m.cell_descriptions[..cpc];
         let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
-        let cols = ColumnSplit::new(&mut m.score_matrix, cur, cpc, m.length);
-        let p: &[f32] = cols.column(prev);
+        debug_assert_eq!(prev + 1, cur);
+        let hrows = m.max_period + 1;
+        let cols = ColumnSplit::new(&mut m.full_columns, &m.history, desc, cur, hrows, m.length);
+        let p: &[f32] = cols.p;
 
         for (row, &d) in desc.iter().enumerate() {
             match d.cell_type {
@@ -843,6 +851,7 @@ impl UModel {
             }
         }
 
+        m.record_history(cur);
         m.move_matrix_forward();
     }
 }

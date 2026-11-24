@@ -1,22 +1,35 @@
 //! Cell descriptions and the rotating DP matrix used by ULTRA. Port of
 //! `umatrix.hpp` / `umatrix.cpp`.
 //!
-//! `UMatrix` holds two flat matrices:
-//! - a score matrix of `f32`, `cells_per_column` rows per column;
+//! The C++ keeps a score for every cell of every column. Only the
+//! background and match rows of a column are ever read once the next
+//! column is complete (the DP's look-backs, the tracebacks and the repeat
+//! scores all go through them; an insertion or deletion row is read only by
+//! the column after it). So `UMatrix` keeps:
+//! - every row of the previous and the current column (`full_columns`);
+//! - the background and match rows of every column (`history`), one score
+//!   per order with the background in slot 0, `max_period + 1` per column;
 //! - a traceback matrix of `i32`, `max_period + 1` rows per column. Row `k`
 //!   of a traceback column records which cell order-`k` was reached from, so
 //!   it does not describe every cell, only the background row (row 0) and one
-//!   row per period.
+//!   row per period. Entries are cell ids, which can exceed 65,535 for long
+//!   periods with many indel states, so they stay 32-bit.
+//!
+//! Every score the C++ would read is the same here, including those of
+//! columns not computed in the current window, which hold whatever the last
+//! window that computed them left, adjusted the same way. With the default
+//! 10 insertion and 10 deletion states this is about 20 times less memory
+//! than the C++ layout.
 //!
 //! The C++ keeps per-column pointer tables (`scoreColumns`,
 //! `tracebackColumns`) and `current*`/`previous*` column pointers. Here a
 //! column is addressed by index and the slices come from accessor methods
 //! ([`UMatrix::score_column`], [`UMatrix::current_score_column`], ...).
 //!
-//! Both matrices have `length + 1` columns of storage. The C++ only fills
-//! pointer-table entries `0..length`, so column `length` is backed by memory
-//! but has no valid `scoreColumns` entry there; no code path reaches it when
-//! the matrix is sized as `Ultra` sizes it.
+//! Storage has `length + 1` columns. The C++ only fills pointer-table
+//! entries `0..length`, so column `length` is backed by memory but has no
+//! valid `scoreColumns` entry there; no code path reaches it when the matrix
+//! is sized as `Ultra` sizes it.
 
 /// Score used for impossible transitions. A double in C++; it is converted to
 /// `f32` wherever it is stored into a float.
@@ -75,9 +88,16 @@ pub struct UMatrix {
     /// Number of rows in a score column.
     pub cells_per_column: usize,
 
-    /// Flat score storage, `cells_per_column * (length + 1)` floats. Column
-    /// `c` occupies `[c * cells_per_column, (c + 1) * cells_per_column)`.
-    pub score_matrix: Vec<f32>,
+    /// Every row of the previous and the current column: column `c` is slot
+    /// `c % 2`, `[slot * cells_per_column, (slot + 1) * cells_per_column)`.
+    pub full_columns: Vec<f32>,
+    /// Background and match rows of every column, `history_rows()` floats per
+    /// column indexed by order (slot 0 is the background row), `length + 1`
+    /// columns. Written when a column is complete.
+    pub history: Vec<f32>,
+    /// The row of each order's match cell, `max_period` entries; entry 0 is
+    /// the background row.
+    pub match_rows: Vec<usize>,
     /// Flat traceback storage, `(max_period + 1) * (length + 1)` ints. Column
     /// `c` occupies `[c * (max_period + 1), (c + 1) * (max_period + 1))`.
     pub traceback_matrix: Vec<i32>,
@@ -154,7 +174,9 @@ impl UMatrix {
             max_deletions: maximum_deletions as i64 as u64 as usize,
             length: matrix_length as i64 as u64 as usize,
             cells_per_column: 0,
-            score_matrix: Vec::new(),
+            full_columns: Vec::new(),
+            history: Vec::new(),
+            match_rows: Vec::new(),
             traceback_matrix: Vec::new(),
             current_column_index: 0,
             previous_column_index: 0,
@@ -174,17 +196,57 @@ impl UMatrix {
         self.max_period + 1
     }
 
-    /// Score column `col` (C++ `scoreColumns[col]`).
+    /// Scores per column in `history` (`max_period + 1`).
+    #[inline(always)]
+    pub fn history_rows(&self) -> usize {
+        self.max_period + 1
+    }
+
+    /// Whether every row of column `col` is kept: the previous or the
+    /// current column.
+    #[inline(always)]
+    pub fn is_full_column(&self, col: usize) -> bool {
+        col == self.current_column_index || col == self.previous_column_index
+    }
+
+    /// Every row of score column `col` (C++ `scoreColumns[col]`). Only the
+    /// previous and the current column have every row; panics for others
+    /// (their background and match rows are in [`score_at`](Self::score_at)).
     #[inline]
     pub fn score_column(&self, col: usize) -> &[f32] {
+        assert!(self.is_full_column(col), "column {col} keeps only its background and match rows");
         let n = self.cells_per_column;
-        &self.score_matrix[col * n..(col + 1) * n]
+        let slot = col & 1;
+        &self.full_columns[slot * n..(slot + 1) * n]
     }
 
     #[inline]
     pub fn score_column_mut(&mut self, col: usize) -> &mut [f32] {
+        assert!(self.is_full_column(col), "column {col} keeps only its background and match rows");
         let n = self.cells_per_column;
-        &mut self.score_matrix[col * n..(col + 1) * n]
+        let slot = col & 1;
+        &mut self.full_columns[slot * n..(slot + 1) * n]
+    }
+
+    /// The background (`order` 0) or order-`order` match score of column
+    /// `col`.
+    #[inline(always)]
+    pub fn history_at(&self, col: usize, order: usize) -> f32 {
+        self.history[col * self.history_rows() + order]
+    }
+
+    /// Copies the background and match rows of column `col`, which must be
+    /// complete and full, into `history`.
+    #[inline]
+    pub fn record_history(&mut self, col: usize) {
+        let n = self.cells_per_column;
+        let h = self.history_rows();
+        let slot = col & 1;
+        let full = &self.full_columns[slot * n..(slot + 1) * n];
+        let dst = &mut self.history[col * h..col * h + self.match_rows.len()];
+        for (d, &r) in dst.iter_mut().zip(&self.match_rows) {
+            *d = full[r];
+        }
     }
 
     /// Traceback column `col` (C++ `tracebackColumns[col]`), `max_period + 1`
@@ -201,10 +263,17 @@ impl UMatrix {
         &mut self.traceback_matrix[col * n..(col + 1) * n]
     }
 
-    /// C++ `scoreColumns[col][row]`.
+    /// C++ `scoreColumns[col][row]`. Background and match rows are kept for
+    /// every column; insertion and deletion rows only for the previous and
+    /// the current column (panics otherwise).
     #[inline]
     pub fn score_at(&self, col: usize, row: usize) -> f32 {
-        self.score_matrix[col * self.cells_per_column + row]
+        let d = self.cell_descriptions[row];
+        if d.cell_type == CT_MATCH || d.cell_type == CT_BACKGROUND {
+            self.history_at(col, d.order as usize)
+        } else {
+            self.score_column(col)[row]
+        }
     }
 
     /// C++ `tracebackColumns[col][row]`.
@@ -290,20 +359,33 @@ impl UMatrix {
     /// `number_of_columns` columns from `starting_at` to row 0 = 0 and every
     /// other row = `NEG_INF`.
     pub fn adjust_score_to_zero_from(&mut self, starting_at: i32, number_of_columns: i32) {
+        let h = self.history_rows();
         for i in 0..number_of_columns {
             let p = (i + starting_at) as usize;
-            let col = self.score_column_mut(p);
-            for v in col.iter_mut().skip(1) {
-                *v = NEG_INF_F32;
+            let hist = &mut self.history[p * h..(p + 1) * h];
+            hist.fill(NEG_INF_F32);
+            hist[0] = 0.0;
+            if self.is_full_column(p) {
+                let col = self.score_column_mut(p);
+                for v in col.iter_mut().skip(1) {
+                    *v = NEG_INF_F32;
+                }
+                col[0] = 0.0;
             }
-            col[0] = 0.0;
         }
     }
 
     /// Adds `adjustment` to every row of `column`.
     pub fn adjust_column(&mut self, column: i32, adjustment: f32) {
-        for v in self.score_column_mut(column as usize) {
+        let c = column as usize;
+        let h = self.history_rows();
+        for v in &mut self.history[c * h..(c + 1) * h] {
             *v += adjustment;
+        }
+        if self.is_full_column(c) {
+            for v in self.score_column_mut(c) {
+                *v += adjustment;
+            }
         }
     }
 
@@ -420,8 +502,9 @@ impl UMatrix {
         self.current_column_index = 1;
         self.previous_column_index = 0;
 
-        let cpc = self.cells_per_column;
-        self.score_matrix[..cpc].fill(0.0);
+        self.score_column_mut(0).fill(0.0);
+        let h = self.history_rows();
+        self.history[..h].fill(0.0);
         let tbr = self.traceback_rows();
         self.traceback_matrix[..tbr].fill(0);
     }
@@ -437,13 +520,14 @@ impl UMatrix {
     /// call.
     pub fn calculate_traceback(&mut self, start_column: usize) {
         let mut row: usize = 0;
-        let start_col = self.score_column(start_column);
-        let mut best_value = start_col[0];
+        let mut best_value = self.history_at(start_column, 0);
 
-        for i in 1..self.cells_per_column {
-            if self.cell_descriptions[i].cell_type == CT_MATCH && start_col[i] > best_value {
+        // The match rows in row order, which is order order.
+        for (order, &i) in self.match_rows.iter().enumerate().skip(1) {
+            let v = self.history_at(start_column, order);
+            if v > best_value {
                 row = i;
-                best_value = start_col[i];
+                best_value = v;
             }
         }
 
@@ -582,11 +666,19 @@ impl UMatrix {
 
         self.cells_per_column = desc.len();
         self.steady = SteadyState::for_cells(&desc);
+        self.match_rows = desc
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.cell_type == CT_MATCH || d.cell_type == CT_BACKGROUND)
+            .map(|(r, _)| r)
+            .collect();
+        debug_assert!(self.match_rows.iter().enumerate().all(|(o, &r)| desc[r].order as usize == o));
         self.cell_descriptions = desc;
 
         // Rust zero-fills where the C++ mallocs uninitialised memory. Every
         // cell is written before it is read on the paths ULTRA uses.
-        self.score_matrix = vec![0.0; self.cells_per_column * (self.length + 1)];
+        self.full_columns = vec![0.0; 2 * self.cells_per_column];
+        self.history = vec![0.0; (self.max_period + 1) * (self.length + 1)];
         self.traceback_matrix = vec![0; (self.max_period + 1) * (self.length + 1)];
 
         self.traceback = vec![0; self.length + 2];
@@ -626,7 +718,9 @@ mod tests {
         ];
         assert_eq!(got, want);
         assert_eq!(m.cells_per_column, 13);
-        assert_eq!(m.score_matrix.len(), 13 * 9);
+        assert_eq!(m.full_columns.len(), 13 * 2);
+        assert_eq!(m.history.len(), 6 * 9);
+        assert_eq!(m.match_rows, vec![0, 1, 2, 5, 9]);
         assert_eq!(m.traceback_matrix.len(), 6 * 9);
         assert_eq!(m.traceback.len(), 10);
         assert_eq!((m.current_column_index, m.previous_column_index), (1, 0));
