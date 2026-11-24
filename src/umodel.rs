@@ -240,15 +240,19 @@ pub const POSITION_EMISSION_ARRAYS: u64 = 10;
 
 /// Updates `best` / `best_from` with the exits of consecutive rows
 /// `first_row..` as the general path does, one at a time, keeping the first
-/// strictly greater. The block's maximum only decides whether any exit needs
-/// that check, so the result is the same.
+/// strictly greater. The first loop tests whether any exit is above `best`,
+/// and only then does the second loop run, so the result is the same. The
+/// test compares each exit with `best` and does not take the block's
+/// maximum: `f32::max` has to allow for NaN, and with it the compiler did
+/// not compare the block as one vector, which made the kernel measurably
+/// slower.
 #[inline(always)]
 fn take_exits(exit: &[f32], best: &mut f32, best_from: &mut i32, first_row: usize) {
-    let mut m = exit[0];
-    for &e in &exit[1..] {
-        m = m.max(e);
+    let mut any = false;
+    for &e in exit {
+        any |= e > *best;
     }
-    if m > *best {
+    if any {
         for (l, &e) in exit.iter().enumerate() {
             if e > *best {
                 *best = e;
@@ -278,38 +282,49 @@ impl OrderScratch {
     }
 }
 
-/// One order's insertion and deletion cells of a steady column, filled by
-/// [`SteadyOrder::fill`]. Kept out of line so that the loop over orders, which
-/// most orders pass through with few or no indel cells, stays small.
+/// The inputs to a steady column's insertion and deletion cells that are the
+/// same for every order. [`SteadyOrder::fill`] fills one order's cells.
 struct SteadyOrder<'a> {
     seq: &'a [Symbol],
     i: usize,
-    o: usize,
-    /// The order's match row.
-    r: usize,
     cur: usize,
-    n_ins: usize,
-    n_del: usize,
-    /// The order's match emission, emission_score(i, o).
-    es: f32,
     t_in_ma: f32,
     t_de_ma: f32,
-    /// This order's history row.
-    h_o: &'a [f32],
     pe: &'a PositionEmissions,
+    /// The previous column.
+    p: &'a [f32],
 }
 
 impl SteadyOrder<'_> {
-    /// Writes the indel rows of the current column `c` from the previous
-    /// column `p`, and takes their exits into `best_in` / `best_from_in`.
+    /// Writes order `o`'s indel rows of the current column `c` from the
+    /// previous column, and returns `best_in` / `best_from_in` with their
+    /// exits taken. `r` is the order's match row, `es` its match emission
+    /// (emission_score(i, o)) and `h_o` its history row.
+    ///
+    /// Kept out of line so that the loop over orders, which most orders pass
+    /// through with few or no indel cells, stays small. The per-order values
+    /// are arguments and the result is returned: going through a struct and
+    /// `&mut` instead measured slower.
     #[inline(never)]
-    fn fill(&self, p: &[f32], c: &mut [f32], best_in: &mut f32, best_from_in: &mut i32) {
-        let SteadyOrder { seq, i, o, r, cur, n_ins, n_del, es, t_in_ma, t_de_ma, h_o, pe } = *self;
+    #[allow(clippy::too_many_arguments)]
+    fn fill(
+        &self,
+        c: &mut [f32],
+        h_o: &[f32],
+        o: usize,
+        r: usize,
+        n_ins: usize,
+        n_del: usize,
+        es: f32,
+        best_in: f32,
+        best_from_in: i32,
+    ) -> (f32, i32) {
+        let SteadyOrder { seq, i, cur, t_in_ma, t_de_ma, pe, p } = *self;
         let against = |y: Symbol| pe.against(y);
         let from = |x: Symbol| pe.from(x);
         let emit_i = against(seq[i]);
-        let mut best = *best_in;
-        let mut best_from = *best_from_in;
+        let mut best = best_in;
+        let mut best_from = best_from_in;
         // Every emission of this order's indel cells is a contiguous run
         // of one of the position arrays, and every look-back a
         // contiguous run of this order's history, so the indel loops run
@@ -320,8 +335,8 @@ impl SteadyOrder<'_> {
         let parent_o = h_o[cur - o];
         let parent_o1 = h_o[cur - o - 1];
 
-        // Fewer cells than a block, and the cells after the last block,
-        // are filled one at a time straight from the arrays.
+        // Fewer cells than a block are filled one at a time straight from
+        // the arrays.
         let ins_cell = |k: usize, pr: f32| -> f32 {
             let mut v = pr;
             v -= h_o[cur - o - k - 1];
@@ -361,10 +376,15 @@ impl SteadyOrder<'_> {
                 v += eh;
                 v
             };
-            let mut j = 0;
-            while j + LANES <= n {
+            let mut start = 0;
+            while start < n {
                 // Cells j..j + LANES; the reversed slices hold them at
-                // n - LANES - j.. in reverse.
+                // n - LANES - j.. in reverse. The last block starts at
+                // n - LANES, so it ends at cell n and no cells are left
+                // over. The cells it shares with the block before it get
+                // the same values again, and their exits were already
+                // taken, so they are not above `best`.
+                let j = start.min(n - LANES);
                 let q = n - LANES - j;
                 let (pv, fv, nv) = (block(pin, j), block(further, q), block(nearer, q));
                 let (ebv, ehv) = (block(e_back, q), block(e_here, q));
@@ -377,13 +397,7 @@ impl SteadyOrder<'_> {
                 }
                 cin[j..j + LANES].copy_from_slice(&v);
                 take_exits(&exit, &mut best, &mut best_from, r + 1 + j);
-                j += LANES;
-            }
-            while j < n {
-                let pr = pin[j];
-                cin[j] = ins_cell(j + 1, pr);
-                take_exits(&[pr + t_in_ma + es], &mut best, &mut best_from, r + 1 + j);
-                j += 1;
+                start += LANES;
             }
         }
 
@@ -430,8 +444,10 @@ impl SteadyOrder<'_> {
                 v += u;
                 v
             };
-            let mut j = 0;
-            while j + LANES <= n {
+            let mut start = 0;
+            while start < n {
+                // The last block starts at n - LANES, as for the insertions.
+                let j = start.min(n - LANES);
                 let q = n - LANES - j;
                 let (pv, av, uv) = (block(pdel, j), block(e_at, j), block(e_up, j));
                 let (bv, dv) = (block(e_by_o, q), block(e_by_2o, q));
@@ -444,19 +460,11 @@ impl SteadyOrder<'_> {
                 }
                 cdel[j..j + LANES].copy_from_slice(&v);
                 take_exits(&exit, &mut best, &mut best_from, first + j);
-                j += LANES;
-            }
-            while j < n {
-                let q = n - 1 - j;
-                let pr = pdel[j];
-                cdel[j] = one(pr, e_at[j], e_by_o[q], e_by_2o[q], e_up[j]);
-                take_exits(&[pr + t_de_ma + es], &mut best, &mut best_from, first + j);
-                j += 1;
+                start += LANES;
             }
         }
 
-        *best_in = best;
-        *best_from_in = best_from;
+        (best, best_from)
     }
 }
 
@@ -1261,6 +1269,7 @@ impl UModel {
         // raise their match row (after its own scores, as in the general
         // path). Order 1 has none.
         if max_ins + max_del > 0 {
+            let indels = SteadyOrder { seq, i, cur, t_in_ma, t_de_ma, pe, p };
             for o in 2..=n_orders {
                 let n_ins = max_ins.min(o - 1);
                 let n_del = max_del.min(o - 1);
@@ -1268,21 +1277,8 @@ impl UModel {
                 let es = order_es[o];
                 let h_o = &history[o * stride..(o + 1) * stride];
                 if n_ins >= LANES || n_del >= LANES {
-                    let order_cells = SteadyOrder {
-                        seq,
-                        i,
-                        o,
-                        r,
-                        cur,
-                        n_ins,
-                        n_del,
-                        es,
-                        t_in_ma,
-                        t_de_ma,
-                        h_o,
-                        pe,
-                    };
-                    order_cells.fill(p, c, &mut best[o], &mut best_from[o]);
+                    (best[o], best_from[o]) =
+                        indels.fill(c, h_o, o, r, n_ins, n_del, es, best[o], best_from[o]);
                     continue;
                 }
                 // Fewer cells than a block: one at a time, inline.

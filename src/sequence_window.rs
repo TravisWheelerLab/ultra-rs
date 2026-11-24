@@ -31,9 +31,10 @@ pub struct SequenceWindow {
     /// Where the window ends in the sequence.
     pub end: u64,
 
-    /// Backing storage, `max_length + max_overlap + 1` symbols. The overlap
-    /// with the previous window occupies `[0, overlap)` and the new symbols
-    /// occupy `[new_seq_offset, new_seq_offset + length)`.
+    /// Backing storage, `max_length + max_overlap + 1` symbols (empty in a
+    /// [`deferred`](Self::deferred) window until its first `prepare_window`).
+    /// The overlap with the previous window occupies `[0, overlap)` and the
+    /// new symbols occupy `[new_seq_offset, new_seq_offset + length)`.
     pub seq_mem: Vec<Symbol>,
     /// Index into `seq_mem` of the first non-overlap symbol (C++ `newSeq`).
     pub new_seq_offset: usize,
@@ -56,6 +57,19 @@ pub struct SequenceWindow {
 
 impl SequenceWindow {
     pub fn new(max_length: usize, max_overlap: usize) -> Self {
+        let mut window = Self::deferred(max_length, max_overlap);
+        window.allocate();
+        window
+    }
+
+    /// A window whose buffer is allocated by the first
+    /// [`prepare_window`](Self::prepare_window); until then `seq_mem` is
+    /// empty. The reader's pool is made of these, so a window that is never
+    /// filled has no buffer. Allocating every buffer of the pool up front
+    /// costs resident memory even for windows that are never used, because
+    /// a zeroed allocation of this size is cleared, and so touched, when it
+    /// is made.
+    pub fn deferred(max_length: usize, max_overlap: usize) -> Self {
         SequenceWindow {
             window_id: UNSET_ID,
             seq_id: UNSET_ID,
@@ -63,7 +77,7 @@ impl SequenceWindow {
             sequence_name: String::new(),
             start: 0,
             end: 0,
-            seq_mem: vec![0; max_length + max_overlap + 1],
+            seq_mem: Vec::new(),
             new_seq_offset: max_overlap,
             length: 0,
             overlap: 0,
@@ -71,6 +85,13 @@ impl SequenceWindow {
             symbol_freqs: [0.0; NUM_SYMBOLS],
             max_length,
             max_overlap,
+        }
+    }
+
+    /// Allocates the buffer of a [`deferred`](Self::deferred) window.
+    fn allocate(&mut self) {
+        if self.seq_mem.is_empty() {
+            self.seq_mem = vec![0; self.max_length + self.max_overlap + 1];
         }
     }
 
@@ -94,6 +115,7 @@ impl SequenceWindow {
     }
 
     pub fn prepare_window(&mut self, seq_name: &str, seq_id: u64, start: u64, overlap: usize) {
+        self.allocate();
         self.overlap = overlap;
 
         self.sequence_name.clear();

@@ -458,10 +458,11 @@ impl FASTAReader {
     }
 
     /// Creates `count` windows with ids `0..count` and pushes them onto the
-    /// waiting pool in that order.
+    /// waiting pool in that order. Each allocates its buffer when it is first
+    /// filled.
     fn create_windows(&mut self, count: i32, seq_length: u64, overlap_length: u64) {
         for i in 0..count.max(0) {
-            let mut new_window = Box::new(SequenceWindow::new(
+            let mut new_window = Box::new(SequenceWindow::deferred(
                 seq_length as usize,
                 overlap_length as usize,
             ));
