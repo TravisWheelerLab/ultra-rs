@@ -57,24 +57,29 @@ fn previous_emission_score(
 /// run of the other, so with ten arrays, `against(y)[a] = diff[seq[a]][y]`
 /// and `from(x)[a] = diff[x][seq[a]]`, each run is a contiguous slice.
 ///
-/// Positions are filled in order as columns are computed, and refilled
-/// from the start when the matrix is restarted (a new window) or `diff`
-/// changes. Within one window the sequence must not change, as the matrix
-/// itself already requires.
+/// A position's values depend only on its symbol and on `diff`, so the
+/// cache keeps the symbol each position was filled from. Before every
+/// column, [`fill`](Self::fill) checks the positions the column will read
+/// against the sequence as it is now and refills from the first one that
+/// differs, then fills up to the current position (never ahead of it). The
+/// cached values are therefore always those the general path would compute
+/// from the live sequence, whatever the caller does between columns
+/// (writing symbols as it goes, or a new window without
+/// `restart_matrix`). Everything is refilled when any bit of `mscore` or
+/// `bscore` changes.
 #[derive(Debug, Clone, Default)]
 pub struct PositionEmissions {
     /// Bits of the `mscore` and `bscore` the values were computed from.
     mscore_bits: [[u32; 5]; 5],
     bscore_bits: [u32; 5],
     diff: [[f32; 5]; 5],
-    restarts: u64,
+    /// Positions `0..filled` hold values; `symbols[a]` is the symbol
+    /// position `a` was filled from.
     filled: usize,
+    symbols: Vec<Symbol>,
     stride: usize,
     values: Vec<f32>,
 }
-
-/// Positions [`PositionEmissions::fill`] fills at least at a time.
-const FILL_AHEAD: usize = 256;
 
 impl PositionEmissions {
     /// `diff[seq[a]][y]` for every filled position `a`.
@@ -91,15 +96,16 @@ impl PositionEmissions {
         &self.values[k * self.stride..k * self.stride + self.filled]
     }
 
-    /// Makes positions `0..=upto` of `seq` valid for these `mscore` and
-    /// `bscore` and the matrix restart count `restarts`.
+    /// Makes positions `upto - back ..= upto` of `seq` hold the values for
+    /// their current symbols and these `mscore` and `bscore`; `back` is how
+    /// far back the column reads.
     fn fill(
         &mut self,
         seq: &[Symbol],
         upto: usize,
+        back: usize,
         mscore: &[[f32; 5]; 5],
         bscore: &[f32; 5],
-        restarts: u64,
     ) {
         // Any bit of mscore or bscore changed (branch-free: this runs for
         // every column).
@@ -110,10 +116,9 @@ impl PositionEmissions {
             }
             changed |= bscore[x].to_bits() ^ self.bscore_bits[x];
         }
-        if changed != 0 || restarts != self.restarts || self.values.is_empty() {
+        if changed != 0 || self.values.is_empty() {
             self.mscore_bits = mscore.map(|row| row.map(f32::to_bits));
             self.bscore_bits = bscore.map(f32::to_bits);
-            self.restarts = restarts;
             self.filled = 0;
             // diff[x][y] = mscore[x][y] - bscore[y]: the emission score of
             // symbol y against x, the same float as the general path.
@@ -123,21 +128,29 @@ impl PositionEmissions {
                 }
             }
         }
-        let diff = self.diff;
         if seq.len() > self.stride {
             self.stride = seq.len();
             self.values = vec![0.0; 10 * self.stride];
+            self.symbols = vec![0; self.stride];
             self.filled = 0;
+        }
+        // Positions the column reads that are already filled: keep those up
+        // to the first whose symbol has changed.
+        let lo = upto.saturating_sub(back);
+        let checked_to = self.filled.min(upto + 1);
+        if lo < checked_to && self.symbols[lo..checked_to] != seq[lo..checked_to] {
+            let first = (lo..checked_to).find(|&a| self.symbols[a] != seq[a]).unwrap_or(checked_to);
+            self.filled = first;
         }
         if self.filled > upto {
             return;
         }
-        // Fill ahead in runs, one array at a time: a position's values do
-        // not depend on when they are filled.
+        let diff = self.diff;
         let stride = self.stride;
         let from = self.filled;
-        let to = (upto + 1).max(from + FILL_AHEAD).min(seq.len());
+        let to = upto + 1;
         let symbols = &seq[from..to];
+        self.symbols[from..to].copy_from_slice(symbols);
         for y in 0..5 {
             let against = &mut self.values[y * stride + from..y * stride + to];
             for (v, &s) in against.iter_mut().zip(symbols) {
@@ -695,8 +708,8 @@ impl UModel {
         if self.fast_columns && max_order > 0 && (nuc_index as usize) < seq.len() {
             // Only the blocked kernel reads emissions by position.
             if self.use_blocked_kernel() {
-                let restarts = self.matrix.restarts;
-                self.position_emissions.fill(seq, nuc_index as usize, &self.mscore, &self.bscore, restarts);
+                let back = self.matrix.steady.max_sequence_back.max(0) as usize;
+                self.position_emissions.fill(seq, nuc_index as usize, back, &self.mscore, &self.bscore);
             }
             if self.column_is_steady(seq.len(), nuc_index) {
                 self.steady_column(seq, nuc_index as usize, max_order);
@@ -1617,6 +1630,91 @@ mod tests {
         }
         out.truncate(len);
         String::from_utf8(out).unwrap()
+    }
+
+    /// A negative indel count builds no indel cells, so every path must give
+    /// the results of a count of 0 (the steady kernels once indexed rows that
+    /// the layout does not have).
+    #[test]
+    fn negative_indel_counts_mean_none() {
+        let s = mixed_sequence(500, 11, 7);
+        let mlen = s.len() as i32 + 3;
+        let run = |ins: i32, del: i32, fast: bool| {
+            let mut m = ultra_model_with(12, ins, del, mlen, false, false, false);
+            m.fast_columns = fast;
+            let mut w = SequenceWindow::new(mlen as usize, 0);
+            (run_window(&mut m, &mut w, &s), m.matrix.cells_per_column)
+        };
+        for (ins, del) in [(-1, 3), (4, i32::MIN), (-7, -7), (i32::MIN, 10)] {
+            let want = run(ins.max(0), del.max(0), false);
+            assert_eq!(run(ins, del, false), want, "general path, -i {ins} -d {del}");
+            assert_eq!(run(ins, del, true), want, "fast paths, -i {ins} -d {del}");
+        }
+    }
+
+    /// The blocked kernel's emission cache gives what the general path gives
+    /// from the live sequence: for a caller that writes each symbol just
+    /// before its column, and for a second window written into the same
+    /// buffer (as the window pool reuses buffers).
+    #[test]
+    fn emission_cache_follows_the_live_sequence() {
+        let a = mixed_sequence(600, 30, 11);
+        let b = mixed_sequence(600, 30, 12);
+        let mlen = 603;
+        let hash_columns = |m: &mut UModel, w: &SequenceWindow, n: usize, h: &mut u64| {
+            for i in 0..n as i32 {
+                m.calculate_current_column(w, i, None);
+                let x = &m.matrix;
+                for v in x.score_column(x.previous_column_index) {
+                    *h = fold(*h, v.to_bits() as u64);
+                }
+            }
+        };
+        for fast in [false, true] {
+            let mut results = Vec::new();
+            // Streaming: the window holds only the symbols written so far.
+            let mut m = ultra_model_with(31, 10, 10, mlen, false, false, false);
+            m.fast_columns = fast;
+            let mut w = SequenceWindow::new(mlen as usize, 0);
+            w.length = a.len();
+            m.matrix.restart_matrix();
+            let mut h = 0u64;
+            for (i, c) in a.bytes().enumerate() {
+                w.seq_mem[i] = symbol_for_char(c);
+                m.calculate_current_column(&w, i as i32, None);
+                let x = &m.matrix;
+                for v in x.score_column(x.previous_column_index) {
+                    h = fold(h, v.to_bits() as u64);
+                }
+            }
+            // Then a second window in the same buffer.
+            for (i, c) in b.bytes().enumerate() {
+                w.seq_mem[i] = symbol_for_char(c);
+            }
+            m.matrix.restart_matrix();
+            hash_columns(&mut m, &w, b.len(), &mut h);
+            results.push(h);
+            if !fast {
+                continue;
+            }
+            // The same with every symbol written up front, general path.
+            let mut g = ultra_model_with(31, 10, 10, mlen, false, false, false);
+            g.fast_columns = false;
+            let mut w2 = SequenceWindow::new(mlen as usize, 0);
+            w2.length = a.len();
+            for (i, c) in a.bytes().enumerate() {
+                w2.seq_mem[i] = symbol_for_char(c);
+            }
+            g.matrix.restart_matrix();
+            let mut h2 = 0u64;
+            hash_columns(&mut g, &w2, a.len(), &mut h2);
+            for (i, c) in b.bytes().enumerate() {
+                w2.seq_mem[i] = symbol_for_char(c);
+            }
+            g.matrix.restart_matrix();
+            hash_columns(&mut g, &w2, b.len(), &mut h2);
+            assert_eq!(results[0], h2, "blocked kernel with a streamed / reused window");
+        }
     }
 
     /// take_exits keeps the first strictly greater exit, as one comparison

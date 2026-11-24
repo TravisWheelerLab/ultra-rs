@@ -91,7 +91,15 @@ pub struct UModelDriver<'a> {
 }
 
 impl<'a> UModelDriver<'a> {
+    /// Also turns on [`UMatrix::keep_all_rows`](crate::umatrix::UMatrix::keep_all_rows):
+    /// [`analyze_window`](Self::analyze_window) reads the scores of the
+    /// insertion and deletion cells on the traceback, which the matrix
+    /// otherwise keeps only for its last two columns. Create the driver
+    /// before computing the window's columns (as
+    /// [`analyze_sequence`](Self::analyze_sequence) does), or reading an
+    /// earlier column's indel row panics.
     pub fn new(m: &'a mut UModel, ws: i32) -> Self {
+        m.matrix.keep_all_rows();
         let n = m.matrix.length + 2;
         UModelDriver {
             model: m,
@@ -254,6 +262,73 @@ impl<'a> UModelDriver<'a> {
 mod tests {
     use super::*;
     use crate::symbol::symbol_for_char;
+
+    /// With insertion and deletion states the traceback passes through indel
+    /// cells, whose scores analyze_window reads from older columns. The
+    /// driver keeps every row, recorded as each column completes, so these
+    /// reads work and return each column's scores; both DP paths agree.
+    #[test]
+    fn analyze_window_reads_indel_rows() {
+        // The input and model of umodel's columns_and_tracebacks_match_cpp,
+        // whose traceback goes through insertion and deletion cells.
+        let s = "ACGTTGCANNNNGCAGCAGCAGCAGCATCAGCAGCAGCGCAGCAGCAGGTTACGATATATATANATATATATCGATGCTAGTACCAGTCAGTTAGCAGTCAGTTAGCAGTCATCAGTTAGCAGGTCAGTTAGCACCGTA";
+        let mlen = s.len() as i32 + 3;
+        let mut runs = Vec::new();
+        for fast in [false, true] {
+            let mut m = UModel::new(11, 10, 10, mlen);
+            m.fast_columns = fast;
+            m.upstream_indel_windows = true;
+            m.period_decay = 0.85;
+            m.set_match_probabilities(0.7);
+            m.set_atcg_probabilities(0.25, 0.25, 0.25, 0.25);
+            m.tp_zero_to_match = 0.01;
+            m.tp_match_to_zero = 0.05;
+            m.tp_match_to_insertion = 0.02;
+            m.tp_match_to_deletion = 0.02;
+            m.tp_consecutive_insertion = 0.02;
+            m.tp_consecutive_deletion = 0.02;
+            m.calculate_scores();
+            let mut w = SequenceWindow::new(mlen as usize, 0);
+            w.length = s.len();
+            for (i, c) in s.bytes().enumerate() {
+                w.seq_mem[i] = symbol_for_char(c);
+            }
+            m.matrix.keep_all_rows();
+            m.matrix.restart_matrix();
+            // Every row of each column while it is the previous column.
+            let mut seen: Vec<(usize, Vec<u32>)> = Vec::new();
+            for i in 0..s.len() as i32 {
+                m.calculate_current_column(&w, i, None);
+                let col = m.matrix.previous_column_index;
+                seen.push((col, m.matrix.score_column(col).iter().map(|v| v.to_bits()).collect()));
+            }
+            m.calculate_current_column_without_emission(None);
+
+            for (col, rows) in &seen {
+                for (row, &bits) in rows.iter().enumerate() {
+                    assert_eq!(m.matrix.score_at(*col, row).to_bits(), bits, "column {col} row {row}");
+                }
+            }
+
+            let mut d = UModelDriver::new(&mut m, mlen - 4);
+            d.threshold = 1.0;
+            d.analyze_window(s.len() as i32, 0, true);
+            let on_indel = d.current_traceback[..s.len()]
+                .iter()
+                .any(|&c| c > 0 && d.model.matrix.cell_descriptions[c as usize].cell_type != crate::umatrix::CT_MATCH);
+            assert!(on_indel, "the traceback should pass through an indel cell");
+            let got: Vec<_> = d
+                .repeats
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|r| (r.sequence_start, r.sequence_end, r.start_score.to_bits(), r.max_score.to_bits()))
+                .collect();
+            assert!(!got.is_empty());
+            runs.push(got);
+        }
+        assert_eq!(runs[0], runs[1]);
+    }
 
     /// Expected values were dumped from the upstream C++ driven the same way.
     #[test]

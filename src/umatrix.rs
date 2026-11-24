@@ -117,10 +117,13 @@ pub struct UMatrix {
     /// `length + 2` entries, zeroed at construction and never reset.
     pub traceback: Vec<i32>,
 
-    /// How many times [`restart_matrix`](Self::restart_matrix) has run: a
-    /// new value means a new window, so anything cached for the previous
-    /// window's sequence is stale.
-    pub restarts: u64,
+    /// Every row of every column, kept only after
+    /// [`keep_all_rows`](Self::keep_all_rows) (empty otherwise), laid out
+    /// like the C++ score matrix: column `c` at `c * cells_per_column`.
+    pub all_rows: Vec<f32>,
+    /// Columns before this one were computed before `keep_all_rows` in the
+    /// current window, so their insertion and deletion rows are missing.
+    pub all_rows_since: usize,
 
     /// Where every cell of a column is past its warm-up, so that
     /// `UModel::calculate_current_column` can take its steady-state path.
@@ -201,11 +204,15 @@ impl UMatrix {
         maximum_deletions: i32,
         matrix_length: i32,
     ) -> Self {
-        // int -> unsigned long long, as the C++ assignments do.
+        // int -> unsigned long long, as the C++ assignments do. A negative
+        // indel count builds no indel cells (create_matrix narrows it back to
+        // int), so it is stored as 0: the steady-state kernels take their
+        // per-order cell counts from these fields and must agree with the
+        // layout.
         let mut m = UMatrix {
             max_period: maximum_period as i64 as u64 as usize,
-            max_insertions: maximum_insertions as i64 as u64 as usize,
-            max_deletions: maximum_deletions as i64 as u64 as usize,
+            max_insertions: maximum_insertions.max(0) as usize,
+            max_deletions: maximum_deletions.max(0) as usize,
             length: matrix_length as i64 as u64 as usize,
             cells_per_column: 0,
             full_columns: Vec::new(),
@@ -219,7 +226,8 @@ impl UMatrix {
             total_score_adjustment: 0.0,
             traceback: Vec::new(),
             steady: SteadyState::default(),
-            restarts: 0,
+            all_rows: Vec::new(),
+            all_rows_since: 0,
         };
         m.create_matrix();
         m
@@ -229,6 +237,26 @@ impl UMatrix {
     #[inline(always)]
     pub fn traceback_rows(&self) -> usize {
         self.max_period + 1
+    }
+
+    /// Keep every row of every column from now on, as the C++ does, so that
+    /// [`score_at`](Self::score_at) can return insertion and deletion rows of
+    /// any column. Costs `cells_per_column * (length + 1)` floats. Columns
+    /// already computed in the current window are not covered (reading
+    /// their indel rows panics); after the next
+    /// [`restart_matrix`](Self::restart_matrix) every column is.
+    /// [`UModelDriver`](crate::umodel_driver::UModelDriver) turns this on.
+    pub fn keep_all_rows(&mut self) {
+        if !self.keeps_all_rows() {
+            self.all_rows = vec![0.0; self.cells_per_column * (self.length + 1)];
+            self.all_rows_since = self.current_column_index;
+        }
+    }
+
+    /// Whether [`keep_all_rows`](Self::keep_all_rows) is on.
+    #[inline(always)]
+    pub fn keeps_all_rows(&self) -> bool {
+        !self.all_rows.is_empty()
     }
 
     /// Scores per column in `history` (`max_period + 1`).
@@ -311,7 +339,17 @@ impl UMatrix {
         let d = self.cell_descriptions[row];
         if d.cell_type == CT_MATCH || d.cell_type == CT_BACKGROUND {
             self.history_at(col, d.order as usize)
+        } else if self.keeps_all_rows() {
+            assert!(
+                col >= self.all_rows_since,
+                "column {col} was computed before keep_all_rows(); call it before computing the window"
+            );
+            self.all_rows[col * self.cells_per_column + row]
         } else {
+            assert!(
+                self.is_full_column(col),
+                "column {col} keeps only its background and match rows; call keep_all_rows() before computing the window to read its indel rows"
+            );
             self.score_column(col)[row]
         }
     }
@@ -372,6 +410,15 @@ impl UMatrix {
     pub fn move_matrix_forward(&mut self) -> bool {
         let wrap = false;
 
+        // The current column is complete.
+        if self.keeps_all_rows() {
+            let cur = self.current_column_index;
+            let n = self.cells_per_column;
+            let slot = cur & 1;
+            let (full, all) = (&self.full_columns, &mut self.all_rows);
+            all[cur * n..(cur + 1) * n].copy_from_slice(&full[slot * n..(slot + 1) * n]);
+        }
+
         self.previous_column_index = self.current_column_index;
         self.current_column_index += 1;
 
@@ -404,6 +451,12 @@ impl UMatrix {
                 }
             }
         }
+        if self.keeps_all_rows() {
+            let n = self.cells_per_column;
+            for v in &mut self.all_rows[..n * self.length] {
+                *v += adj;
+            }
+        }
     }
 
     /// C++ `AdjustScoreToZero(int startingAt, int numberOfColumns)`. Resets
@@ -424,6 +477,12 @@ impl UMatrix {
                 }
                 col[0] = 0.0;
             }
+            if self.keeps_all_rows() {
+                let n = self.cells_per_column;
+                let col = &mut self.all_rows[p * n..(p + 1) * n];
+                col.fill(NEG_INF_F32);
+                col[0] = 0.0;
+            }
         }
     }
 
@@ -437,6 +496,12 @@ impl UMatrix {
         }
         if self.is_full_column(c) {
             for v in self.score_column_mut(c) {
+                *v += adjustment;
+            }
+        }
+        if self.keeps_all_rows() {
+            let n = self.cells_per_column;
+            for v in &mut self.all_rows[c * n..(c + 1) * n] {
                 *v += adjustment;
             }
         }
@@ -552,7 +617,6 @@ impl UMatrix {
     /// the current one, and zeroes column 0 of both matrices. Other columns
     /// and `traceback` are left as they are.
     pub fn restart_matrix(&mut self) {
-        self.restarts = self.restarts.wrapping_add(1);
         self.current_column_index = 1;
         self.previous_column_index = 0;
 
@@ -563,6 +627,11 @@ impl UMatrix {
         }
         let tbr = self.traceback_rows();
         self.traceback_matrix[..tbr].fill(0);
+        if self.keeps_all_rows() {
+            let cpc = self.cells_per_column;
+            self.all_rows[..cpc].fill(0.0);
+            self.all_rows_since = 0;
+        }
     }
 
     /// C++ `CalculateTraceback`. Picks the best row of column `start_column`

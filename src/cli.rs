@@ -1249,6 +1249,15 @@ impl Settings {
             fail("--period must be at least 1\n");
         }
 
+        // The model takes these as 32-bit ints; larger values used to wrap
+        // (to "no indels", or to a small count).
+        if self.max_insert > i32::MAX as u64 {
+            fail("--inserts must be at most 2147483647\n");
+        }
+        if self.max_delete > i32::MAX as u64 {
+            fail("--deletes must be at most 2147483647\n");
+        }
+
         if (self.at as f64) < 0.0 || (self.at as f64) > 1.0 {
             fail("--at must be >= 0.0 and <= 1.0\n");
         }
@@ -1784,6 +1793,23 @@ mod tests {
             assert_eq!(same_as_cpp(&got), same_as_cpp(expected), "memory for {:?}", a);
             assert_eq!(got.lines().count(), expected.lines().count(), "memory for {:?}", a);
         }
+    }
+
+    /// -i / -d above i32::MAX are rejected instead of wrapping.
+    #[test]
+    fn indel_counts_must_fit_in_an_int() {
+        for (a, msg) in [
+            (["./ultra", "-i", "2147483648", "x.fa"], "--inserts must be at most 2147483647\n"),
+            (["./ultra", "-d", "4294967296", "x.fa"], "--deletes must be at most 2147483647\n"),
+        ] {
+            let mut s = Settings::new();
+            let mut err = String::new();
+            assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(false), "{a:?}");
+            assert!(err.contains(msg), "{a:?}: {err}");
+        }
+        let mut s = Settings::new();
+        let mut err = String::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "-i", "2147483647", "x.fa"]), &mut err), Ok(true), "{err}");
     }
 
     /// The two sizes, worked out by hand for the default model.
