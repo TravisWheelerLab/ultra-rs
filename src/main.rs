@@ -11,6 +11,14 @@ use ultra_repeats::mask::output_masked_fasta;
 use ultra_repeats::ultra::Ultra;
 use ultra_repeats::writers::{fmt_f, fmt_g};
 
+/// `println!` that ends the program quietly on a closed pipe (and reports
+/// other write errors) instead of panicking; see `writers::on_write_error`.
+macro_rules! say {
+    ($($arg:tt)*) => {
+        ultra_repeats::writers::print_stdout(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 /// Fresh settings, with `upstream_compat` taken from the environment
 /// variable `ULTRA_UPSTREAM_COMPAT` (see the field's documentation).
 fn new_settings() -> Settings {
@@ -55,8 +63,8 @@ fn main_wrapper(argv: &[String]) -> i32 {
         }
 
         // Run ULTRA on each parameter set
-        println!("Performing parameter search...");
-        println!("Coverage, False Discovery Rate, Parameters");
+        say!("Performing parameter search...");
+        say!("Coverage, False Discovery Rate, Parameters");
 
         let mut best_coverage_index: i32 = -1;
         let mut best_coverage: f64 = 0.0;
@@ -68,6 +76,9 @@ fn main_wrapper(argv: &[String]) -> i32 {
                 exit(0);
             }
             search_setting.assign_settings();
+            // The search runs write nothing, so they must not open (and so
+            // empty) the -o file, as the C++ did.
+            search_setting.out_file.clear();
 
             if !search_setting.tune_indels {
                 search_setting.max_insert = 0;
@@ -112,7 +123,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
                 best_coverage_index = coverage.len() as i32 - 1;
             }
 
-            println!(
+            say!(
                 "({}/{}): {}, {}, {}",
                 coverage.len(),
                 param_strings.len(),
@@ -122,14 +133,14 @@ fn main_wrapper(argv: &[String]) -> i32 {
             );
         }
 
-        println!("----------------------------");
+        say!("----------------------------");
         if best_coverage_index >= 0 {
             let best = best_coverage_index as usize;
             let real_coverage = coverage[best] as f64 / seq_length as f64;
             let false_coverage = shuffled_coverage[best] as f64 / seq_length as f64;
             let fdr = false_coverage / real_coverage;
 
-            println!(
+            say!(
                 "Best coverage within FDR limit ({}): {}, {}, {}",
                 fmt_f(settings.tune_fdr, 3),
                 fmt_f(real_coverage, 5),
@@ -145,7 +156,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
             }
             settings.assign_settings();
         } else {
-            println!(
+            say!(
                 "No parameters found within FDR limit ({}).",
                 fmt_f(settings.tune_fdr, 3)
             );
@@ -169,8 +180,8 @@ fn main_wrapper(argv: &[String]) -> i32 {
     if !settings.disable_summary {
         seq_length = reader_total_seq_length(&ultra);
         let coverage_ratio = true_coverage as f64 / seq_length as f64;
-        println!("----------------------------");
-        println!(
+        say!("----------------------------");
+        say!(
             "Annotation Coverage: {} ({} / {})",
             fmt_f(coverage_ratio, 4),
             true_coverage,
@@ -195,7 +206,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
         ultra.output_repeats(true);
         let shuff_coverage = ultra.coverage();
         let fdr: f32 = shuff_coverage as f32 / true_coverage as f32;
-        println!("Estimated false discovery rate: {}", fmt_g(fdr as f64));
+        say!("Estimated false discovery rate: {}", fmt_g(fdr as f64));
         // The C++ never deletes this instance.
         drop(ultra);
     }
@@ -246,9 +257,19 @@ fn exit(code: i32) -> ! {
 }
 
 fn main() {
-    let argv: Vec<String> = std::env::args_os()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    // Arguments that are not UTF-8 (possible in Linux file names) used to be
+    // converted with replacement characters, so the input could not be
+    // found, or output went to a file with another name.
+    let mut argv: Vec<String> = Vec::new();
+    for a in std::env::args_os() {
+        match a.into_string() {
+            Ok(s) => argv.push(s),
+            Err(a) => {
+                eprintln!("Argument '{}' is not valid UTF-8; ULTRA needs UTF-8 arguments and file names", a.to_string_lossy());
+                std::process::exit(255);
+            }
+        }
+    }
     let r = main_wrapper(&argv);
     let _ = io::stdout().flush();
     std::process::exit(r);

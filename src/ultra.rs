@@ -433,7 +433,9 @@ impl Ultra {
     /// C++ `InitializeWriter`.
     pub fn initialize_writer(&mut self) {
         for i in 0..self.writers.len() {
-            let _ = self.writers[i].initialize_writer(&self.settings, &mut self.outs[i]);
+            if let Err(e) = self.writers[i].initialize_writer(&self.settings, &mut self.outs[i]) {
+                crate::writers::on_write_error(&e);
+            }
         }
     }
 
@@ -796,7 +798,10 @@ impl Ultra {
 
             r.sort_consensi();
             // unsigned long / int, compared with unsigned long long.
+            // --min_length: documented, but the C++ never applies it.
+            let long_enough = self.settings.upstream_compat || r.repeat_length >= self.settings.min_length;
             if r.region_score >= self.score_threshold
+                && long_enough
                 && r.repeat_length / (r.repeat_period as i64 as u64) >= self.settings.min_units
             {
                 self.output_repeat(&r, false);
@@ -805,12 +810,16 @@ impl Ultra {
 
         if flush {
             for i in 0..self.writers.len() {
-                let _ = self.writers[i].end_writer(&self.settings, &mut self.outs[i]);
+                if let Err(e) = self.writers[i].end_writer(&self.settings, &mut self.outs[i]) {
+                    crate::writers::on_write_error(&e);
+                }
             }
         }
 
         for out in self.outs.iter_mut() {
-            let _ = out.flush();
+            if let Err(e) = out.flush() {
+                crate::writers::on_write_error(&e);
+            }
         }
     }
 
@@ -825,13 +834,17 @@ impl Ultra {
         match self.settings_out.take() {
             Some(mut f) => {
                 if !self.settings.hide_settings {
-                    let _ = f.write_all(text.as_bytes());
+                    if let Err(e) = f.write_all(text.as_bytes()) {
+                        crate::writers::on_write_error(&e);
+                    }
                 }
-                let _ = f.flush();
+                if let Err(e) = f.flush() {
+                    crate::writers::on_write_error(&e);
+                }
             }
             None => {
                 if !self.settings.hide_settings {
-                    let _ = io::stdout().write_all(text.as_bytes());
+                    crate::writers::print_stdout(&text);
                 }
             }
         }
@@ -866,7 +879,9 @@ impl Ultra {
 
         if !self.settings.suppress_out {
             for i in 0..self.writers.len() {
-                let _ = self.writers[i].write_repeat(&self.settings, r, &mut self.outs[i]);
+                if let Err(e) = self.writers[i].write_repeat(&self.settings, r, &mut self.outs[i]) {
+                    crate::writers::on_write_error(&e);
+                }
             }
         }
 
@@ -968,6 +983,27 @@ mod tests {
         let mut ultra = Ultra::new(&s);
         let long = "a".repeat(5000);
         assert!(ultra.find_repeats_in_string(&long).is_none());
+    }
+
+    /// --min_length drops shorter repeats (the C++ never applied it).
+    #[test]
+    fn min_length_filters_repeats() {
+        for (compat, want) in [(false, 50), (true, 58)] {
+            let mut s = library_settings();
+            s.suppress_out = true;
+            s.min_length = 10;
+            s.upstream_compat = compat;
+            let mut ultra = Ultra::new(&s);
+            for (k, len) in [8u64, 10, 40].into_iter().enumerate() {
+                let mut r = region(1, 1000 * k as u64, 0);
+                r.repeat_period = 2;
+                r.repeat_length = len;
+                r.region_score = 100.0;
+                ultra.out_repeats.push(r);
+            }
+            ultra.output_repeats(true);
+            assert_eq!(ultra.coverage(), want, "compat {compat}");
+        }
     }
 
     /// A string as long as the matrix does not fit (the column after the

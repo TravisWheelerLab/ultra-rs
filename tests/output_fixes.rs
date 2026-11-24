@@ -1,6 +1,7 @@
-//! End-to-end checks of output bugs fixed in this port (the C++ has them):
-//! joins across window boundaries and masking before the first header.
-//! Needs no C++ binary.
+//! End-to-end checks of bugs fixed in this port (the C++ has them): joins
+//! across window boundaries, masking before the first header, tuning runs
+//! emptying the -o file, a closed stdout, and non-UTF-8 arguments. Needs no
+//! C++ binary.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -149,4 +150,57 @@ fn sequence_before_the_first_header_is_masked() {
     let m = fs::read(&masked).unwrap();
     let lower: Vec<usize> = (0..s.len()).filter(|&i| m[i].is_ascii_lowercase()).collect();
     assert_eq!(lower, (start..end).collect::<Vec<_>>());
+}
+
+/// Tuning runs must not open the -o file: with --tune_only it is not written
+/// at all, so what was there stays.
+#[test]
+fn tuning_leaves_the_output_file_alone() {
+    let d = dir("tune_only");
+    let out = d.join("res.tsv");
+    fs::write(&out, "precious\n").unwrap();
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/example_1.fa");
+    let status = Command::new(env!("CARGO_BIN_EXE_ultra"))
+        .args(["-t", "1", "--tune_only", "-o"])
+        .arg(&out)
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(fs::read_to_string(&out).unwrap(), "precious\n");
+}
+
+/// A reader that goes away (`ultra ... | head -1`) ends ultra quietly with
+/// status 141, as SIGPIPE ends the C++, instead of a panic.
+#[test]
+fn a_closed_stdout_ends_quietly() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/example_2.fa");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ultra"))
+        .args(["-t", "1", "--hs"])
+        .arg(&input)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = [0u8; 1];
+    child.stdout.take().unwrap().read_exact(&mut first).unwrap();
+    // The pipe's read end is dropped here.
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(141), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A non-UTF-8 argument is an error, not silently replaced characters.
+#[test]
+fn non_utf8_arguments_are_rejected() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let out = Command::new(env!("CARGO_BIN_EXE_ultra"))
+        .arg(OsStr::from_bytes(b"seq\xff.fa"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(255));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not valid UTF-8"));
 }

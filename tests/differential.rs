@@ -35,6 +35,10 @@
 //! for its own matrix layout on the "DP matrix cells" and "Total size"
 //! lines; those two numbers are blanked in both outputs before comparing.
 //!
+//! The `--help` line for `--pval` says what the option does in this port
+//! (the C++ text claims it changes BED output, which has no score); the C++
+//! line is rewritten to it before comparing.
+//!
 //! The two programs report different versions (the C++ 1.2.2, this crate its
 //! own), in the `--help` banner and on the first line of JSON output. Before
 //! comparing, the tests rewrite the version in the C++ output to this crate's.
@@ -397,7 +401,11 @@ fn with_port_version(bytes: Vec<u8>) -> Vec<u8> {
         return bytes;
     };
     let ours = env!("CARGO_PKG_VERSION");
-    text.replace("\r\",\n\"Start\": ", "\",\n\"Start\": ").replace(
+    text.replace(
+        "  --pval                      Use p-values instead of scores in BED output\n",
+        "  --pval                      Add p-values to TSV and JSON output\n",
+    )
+    .replace("\r\",\n\"Start\": ", "\",\n\"Start\": ").replace(
         &format!("                Version {REFERENCE_VERSION}\n"),
         &format!("                Version {ours}\n"),
     )

@@ -152,6 +152,28 @@ fn strip_fraction_zeros(s: &mut String) {
     }
 }
 
+
+/// Ends the program after a failed write to an output. A closed pipe
+/// (`ultra ... | head`) ends it quietly with status 141, as SIGPIPE ends the
+/// C++; any other error (a full disk, say) is reported, with status 255.
+/// The C++ ignored write errors and the port discarded them, so a run
+/// carried on to the end and then panicked printing its summary.
+pub fn on_write_error(e: &io::Error) -> ! {
+    if e.kind() == io::ErrorKind::BrokenPipe {
+        std::process::exit(141);
+    }
+    eprintln!("Error writing output: {e}");
+    std::process::exit(255);
+}
+
+/// Writes `text` to stdout, ending the program as [`on_write_error`] does if
+/// that fails. Used in place of `print!`, which panics on a closed pipe.
+pub fn print_stdout(text: &str) {
+    let mut out = io::stdout().lock();
+    if let Err(e) = out.write_all(text.as_bytes()) {
+        on_write_error(&e);
+    }
+}
 /// printf `%g` (glibc, precision 6).
 pub fn fmt_g(v: f64) -> String {
     const P: i32 = 6;

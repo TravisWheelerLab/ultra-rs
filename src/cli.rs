@@ -60,7 +60,7 @@ Output:
   -o,--out TEXT               Output file path
   --disable_streaming_out     Disables streaming output; no output will be created until all analysis has been completed
   -c,--show_counts            Output #copies, #substitutions, #insertions, #deletions
-  --pval                      Use p-values instead of scores in BED output
+  --pval                      Add p-values to TSV and JSON output
   --pval_loc                  The exponential location used for converting scores to p-values.
   --pval_scale                The exponential scale used for converting scores to p-values
   --tsv                       Use TSV output format
@@ -1154,7 +1154,7 @@ impl Settings {
         match r {
             Ok(passed) => passed,
             Err(CliExit::Help(text)) => {
-                print!("{}", text);
+                crate::writers::print_stdout(&text);
                 let _ = std::io::stdout().flush();
                 std::process::exit(0)
             }
@@ -1163,7 +1163,7 @@ impl Settings {
                 std::process::exit(0)
             }
             Err(CliExit::Cite) => {
-                print!("{}", CITE_TEXT);
+                crate::writers::print_stdout(CITE_TEXT);
                 let _ = std::io::stdout().flush();
                 std::process::exit(0)
             }
@@ -1222,6 +1222,10 @@ impl Settings {
             if self.show_logo_nums {
                 fail("--show_logo is only available with --json\n");
             }
+            // The C++ accepts it (and ignores it) without --json.
+            if self.show_wid && !self.upstream_compat {
+                fail("--show_wid is only available with --json\n");
+            }
         }
 
         if (self.ultra_out || self.json_out || self.bed_out) && self.suppress_out {
@@ -1245,6 +1249,19 @@ impl Settings {
             fail("--windows must be at least as large as --threads\n");
         }
 
+        // These used to pass and then panic, wrap or loop: a negative
+        // --win_size or --overlap (other than -1, "not set") became a huge
+        // unsigned size, and --windows is narrowed to a 32-bit int.
+        if self.window_size < -1 {
+            fail("--win_size must be at least 1\n");
+        }
+        if self.overlap < -1 {
+            fail("--overlap must be at least 0\n");
+        }
+        if self.windows > i32::MAX as i64 {
+            fail("--windows must be at most 2147483647\n");
+        }
+
         if self.max_period < 1 {
             fail("--period must be at least 1\n");
         }
@@ -1256,6 +1273,32 @@ impl Settings {
         }
         if self.max_delete > i32::MAX as u64 {
             fail("--deletes must be at most 2147483647\n");
+        }
+
+        // NaN fails no comparison, so the range checks below let it through
+        // and the model was built from NaN probabilities.
+        for (name, v) in [
+            ("--score", self.min_score as f64),
+            ("--tune_fdr", self.tune_fdr),
+            ("--at", self.at as f64),
+            ("--match", self.match_probability as f64),
+            ("--decay", self.period_decay as f64),
+            ("--nr", self.transition_nr as f64),
+            ("--rn", self.transition_rn as f64),
+            ("--ri", self.transition_ri as f64),
+            ("--rd", self.transition_rd as f64),
+            ("--ii", self.transition_ii as f64),
+            ("--dd", self.transition_dd as f64),
+            ("--split_threshold", self.split_threshold as f64),
+            ("--pval_loc", self.p_value_loc as f64),
+            ("--pval_scale", self.p_value_scale as f64),
+        ] {
+            if v.is_nan() {
+                fail(&format!("{name} must be a number\n"));
+            }
+        }
+        if self.acgt.iter().any(|v| v.is_nan()) {
+            fail("--acgt arguments must be numbers\n");
         }
 
         if (self.at as f64) < 0.0 || (self.at as f64) > 1.0 {
@@ -1319,7 +1362,14 @@ impl Settings {
             fail("--tune_fdr must be >= 0 and <= 1.0\n");
         }
 
-        if self.tune_only || self.tune_medium || self.tune_large || self.tune_indels {
+        // --tune_file is a tuning grid, so it tunes (the C++ ignored it
+        // without --tune).
+        if self.tune_only
+            || self.tune_medium
+            || self.tune_large
+            || self.tune_indels
+            || !self.tune_param_path.is_empty()
+        {
             self.tune = true;
         }
 
@@ -1428,6 +1478,14 @@ impl Settings {
             self.window_size = factor.wrapping_mul(self.max_period) as i64;
         }
 
+        // calculate_num_states makes read_all read the whole file
+        // (windows = -1), but it runs here only without --win_size, so with
+        // one (as in a tuning run, which never prints the memory estimate)
+        // the input was streamed after all.
+        if self.read_all {
+            self.windows = -1;
+        }
+
         self.a_freq = (self.at as f64 / 2.0) as f32;
         self.t_freq = (self.at as f64 / 2.0) as f32;
         self.c_freq = ((1.0 - self.at as f64) / 2.0) as f32;
@@ -1502,7 +1560,7 @@ impl Settings {
     }
 
     pub fn print_memory_usage(&mut self) {
-        print!("{}", self.memory_usage_string());
+        crate::writers::print_stdout(&self.memory_usage_string());
     }
 
     /// Settings as the JSON fragment written into output files.
@@ -1793,6 +1851,55 @@ mod tests {
             assert_eq!(same_as_cpp(&got), same_as_cpp(expected), "memory for {:?}", a);
             assert_eq!(got.lines().count(), expected.lines().count(), "memory for {:?}", a);
         }
+    }
+
+    /// Values that used to pass validation and then misbehave are rejected:
+    /// NaN (which fails no range comparison), negative --win_size / --overlap
+    /// other than -1, --windows above i32::MAX, and --show_wid without --json.
+    #[test]
+    fn invalid_values_are_rejected() {
+        let cases: &[(&[&str], &str)] = &[
+            (&["--at", "nan"], "--at must be a number\n"),
+            (&["--decay", "NaN"], "--decay must be a number\n"),
+            (&["-s", "nan"], "--score must be a number\n"),
+            (&["--split_threshold", "nan"], "--split_threshold must be a number\n"),
+            (&["--acgt", "0.25", "nan", "0.25", "0.25"], "--acgt arguments must be numbers\n"),
+            (&["--win_size", "-2"], "--win_size must be at least 1\n"),
+            (&["--overlap", "-5"], "--overlap must be at least 0\n"),
+            (&["--windows", "4294967296"], "--windows must be at most 2147483647\n"),
+            (&["--show_wid"], "--show_wid is only available with --json\n"),
+        ];
+        for (extra, msg) in cases {
+            // The file first: --acgt takes the arguments after it.
+            let mut a = vec!["./ultra", "x.fa"];
+            a.extend_from_slice(extra);
+            let mut s = Settings::new();
+            let mut err = String::new();
+            assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(false), "{a:?}");
+            assert!(err.contains(msg), "{a:?}: {err}");
+        }
+        for ok in [&["--win_size", "-1"][..], &["--overlap", "-1"], &["--overlap", "0"], &["--json", "--show_wid"], &["--score=-inf"]] {
+            let mut a = vec!["./ultra"];
+            a.extend_from_slice(ok);
+            a.push("x.fa");
+            let mut s = Settings::new();
+            let mut err = String::new();
+            assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(true), "{a:?}: {err}");
+        }
+    }
+
+    /// --tune_file tunes; --read_all reads the whole file with --win_size too.
+    #[test]
+    fn tune_file_tunes_and_read_all_keeps_its_window_count() {
+        let mut s = Settings::new();
+        let mut err = String::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "--tune_file", "grid.txt", "x.fa"]), &mut err), Ok(true));
+        assert!(s.tune);
+
+        let mut s = Settings::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "-r", "--win_size", "2000", "x.fa"]), &mut err), Ok(true));
+        s.assign_settings();
+        assert_eq!(s.windows, -1);
     }
 
     /// -i / -d above i32::MAX are rejected instead of wrapping.
@@ -4039,7 +4146,10 @@ Total size: 2.76 GB (2959135872 bytes)
             "Exc",
             r####"Could not convert: --at = abc"####,
         ),
-        (&["./ultra", "ex.fa", "--mem", "--at", "nan"], "Ok", r####""####),
+        // The C++ accepts NaN here (no range comparison fails for it); the
+        // port rejects it.
+        (&["./ultra", "ex.fa", "--mem", "--at", "nan"], "Fail", r####"--at must be a number
+"####),
         (
             &["./ultra", "ex.fa", "--mem", "--at", "inf"],
             "Fail",
@@ -4283,10 +4393,12 @@ Total size: 2.76 GB (2959135872 bytes)
             r####"--winsize cannot be smaller than --period
 "####,
         ),
+        // The C++ accepts this and then misbehaves; the port rejects it.
         (
             &["./ultra", "ex.fa", "--mem", "--win_size", "-5", "-p", "10"],
-            "Ok",
-            r####""####,
+            "Fail",
+            r####"--win_size must be at least 1
+"####,
         ),
         (
             &["./ultra", "ex.fa", "--mem", "--win_size", "-1", "-p", "10"],
@@ -4481,7 +4593,9 @@ Total size: 2.76 GB (2959135872 bytes)
             "Exc",
             r####"Could not convert: --overlap = abc"####,
         ),
-        (&["./ultra", "ex.fa", "--mem", "--overlap", "-7"], "Ok", r####""####),
+        // The C++ accepts this and then panics; the port rejects it.
+        (&["./ultra", "ex.fa", "--mem", "--overlap", "-7"], "Fail", r####"--overlap must be at least 0
+"####),
         (
             &["./ultra", "ex.fa", "--mem", "--min_split_window", "abc"],
             "Exc",
