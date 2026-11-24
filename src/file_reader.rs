@@ -153,6 +153,15 @@ impl FileReader {
             true
         }
     }
+
+    /// See [`FASTAReader::fill_windows_up_to`].
+    pub fn fill_windows_up_to(&mut self, limit: usize) -> bool {
+        if self.format == FileType::Fasta {
+            self.fasta_reader.fill_windows_up_to(limit)
+        } else {
+            true
+        }
+    }
 }
 
 #[cfg(test)]

@@ -6,12 +6,14 @@
 //!
 //! The C++ runs `-t N` pthreads that each pull windows, analyse them and
 //! hand their repeats over through unsynchronised shared state, so its output
-//! with more than one thread varies from run to run. This port keeps the
-//! single-threaded schedule for every thread count: windows are read in the
-//! same batches (the whole window pool, refilled when the ready heap runs
-//! dry), analysed by up to `N` worker threads, and the results are consumed
-//! strictly in read-ID order by the calling thread, which does exactly what
-//! the C++ does after analysing a window with one thread. Every quantity in
+//! with more than one thread varies from run to run. This port gives the
+//! single-threaded output for every thread count: windows are read in file
+//! order (a few at a time, as pool windows come free, so workers do not wait
+//! on a pool refill), analysed by up to `N` worker threads, and the results
+//! are consumed strictly in read-ID order by the calling thread, which does
+//! exactly what the C++ does after analysing a window with one thread. What a
+//! window contains and its read id depend only on file order, not on when it
+//! is read. Every quantity in
 //! that bookkeeping that depends on the thread count is evaluated as for one
 //! thread ([`LOGICAL_THREADS`]), so `-t N` writes the same output as `-t 1`.
 //! With `-t 1` no thread is spawned.
@@ -408,7 +410,14 @@ impl Ultra {
         }
         let shuffle = self.shuffle_sequence;
         self.reader().fasta_reader.shuffle = shuffle;
-        self.reader().fill_windows();
+        if self.number_of_threads == 1 {
+            self.reader().fill_windows();
+        } else {
+            // The workers start on the first windows while the rest are
+            // read; see analyze_file_with_workers.
+            let n = 2 * self.number_of_threads as usize;
+            self.reader().fill_windows_up_to(n);
+        }
 
         self.output_ultra_settings();
         self.initialize_writer();
@@ -478,12 +487,15 @@ impl Ultra {
         }
     }
 
-    /// The `-t N` replacement for the C++ pthread loop. Reproduces
-    /// [`analyze_file_with_thread`](Self::analyze_file_with_thread) exactly:
-    /// the window pool is refilled at the same points, each batch of ready
-    /// windows is analysed in parallel, and the results are applied in
-    /// read-ID order, returning each window to the pool after its results,
-    /// as the sequential loop does.
+    /// The `-t N` replacement for the C++ pthread loop. Gives the output of
+    /// [`analyze_file_with_thread`](Self::analyze_file_with_thread): windows
+    /// are read in file order and their results are applied in read-ID
+    /// order, each window returning to the pool after its results, as the
+    /// sequential loop does. Reading is not tied to the sequential loop's
+    /// refill points: free windows are refilled a few at a time as they come
+    /// back, keeping two windows per worker queued, so the workers never wait
+    /// for a whole pool to be applied. Window contents and read ids depend
+    /// only on file order, so this does not change the output.
     fn analyze_file_with_workers(&mut self) {
         let mut analyzers = std::mem::take(&mut self.analyzers);
         let worker_settings = self.settings.clone();
@@ -507,6 +519,9 @@ impl Ultra {
         let job_rx = Mutex::new(job_rx);
         let (done_tx, done_rx) = mpsc::channel::<Done>();
 
+        let workers = analyzers.len().max(1);
+        let queue_target = 2 * workers;
+
         std::thread::scope(|scope| {
             for analyzer in analyzers.iter_mut() {
                 let notice = PanicNotice(done_tx.clone());
@@ -524,53 +539,64 @@ impl Ultra {
             }
             drop(done_tx);
 
+            // Read order of the next window to hand out and of the next one
+            // whose results are applied.
+            let mut next_sent = 0usize;
+            let mut next_applied = 0usize;
+            let mut pending: BTreeMap<usize, (Box<SequenceWindow>, Vec<Box<RepeatRegion>>)> =
+                BTreeMap::new();
             loop {
-                // As in GetSequenceWindow, refill only when no window is
-                // ready. Within a batch the sequential loop always finds a
-                // ready window, so it never refills there either.
-                {
-                    let reader = self.reader();
-                    if !reader.done_reading_file()
-                        && !reader.is_reading()
-                        && reader.ready_windows_size() == 0
-                    {
+                // Keep two windows per worker queued. Windows are read as
+                // soon as the pool has free ones, so workers do not wait for
+                // a whole pool to be applied and refilled. Reading order and
+                // read ids do not depend on when this happens.
+                while next_sent - next_applied < queue_target {
+                    if self.reader().ready_windows_size() == 0 {
+                        let reader = self.reader();
+                        if reader.done_reading_file() {
+                            break;
+                        }
                         reader.set_is_reading(true);
-                        reader.fill_windows();
+                        reader.fill_windows_up_to(workers);
                         reader.set_is_reading(false);
+                    }
+                    let mut sent = false;
+                    while let Some(w) = self.reader().get_ready_window() {
+                        job_tx.send((next_sent, w)).expect("worker threads stopped");
+                        next_sent += 1;
+                        sent = true;
+                    }
+                    if !sent {
+                        // The pool has no free window, or the file is done.
+                        break;
                     }
                 }
 
-                let mut batch = 0usize;
-                while let Some(w) = self.reader().get_ready_window() {
-                    job_tx.send((batch, w)).expect("worker threads stopped");
-                    batch += 1;
-                }
-                if batch == 0 {
-                    if self.reader().done_reading_file() {
+                if next_applied == next_sent {
+                    if self.reader().done_reading_file() && self.reader().ready_windows_size() == 0 {
                         break;
                     }
                     continue;
                 }
 
-                let mut pending: BTreeMap<usize, (Box<SequenceWindow>, Vec<Box<RepeatRegion>>)> =
-                    BTreeMap::new();
-                for next in 0..batch {
-                    let (window, repeats) = loop {
-                        if let Some(done) = pending.remove(&next) {
-                            break done;
-                        }
-                        // Unwinding from here drops `job_tx`, which stops the
-                        // remaining workers so the scope can join them.
-                        let (i, w, r) = done_rx
-                            .recv()
-                            .expect("worker threads stopped")
-                            .expect("a worker thread panicked");
-                        pending.insert(i, (w, r));
-                    };
-                    self.begin_window(&window);
-                    self.finish_window(0, repeats);
-                    self.reader().add_waiting_window(window);
-                }
+                // Apply results strictly in read order, as the sequential
+                // loop does, returning each window to the pool afterwards.
+                let (window, repeats) = loop {
+                    if let Some(done) = pending.remove(&next_applied) {
+                        break done;
+                    }
+                    // Unwinding from here drops `job_tx`, which stops the
+                    // remaining workers so the scope can join them.
+                    let (i, w, r) = done_rx
+                        .recv()
+                        .expect("worker threads stopped")
+                        .expect("a worker thread panicked");
+                    pending.insert(i, (w, r));
+                };
+                self.begin_window(&window);
+                self.finish_window(0, repeats);
+                self.reader().add_waiting_window(window);
+                next_applied += 1;
             }
             drop(job_tx);
         });

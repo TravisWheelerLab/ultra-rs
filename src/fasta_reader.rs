@@ -174,6 +174,14 @@ impl FASTAReader {
     /// into as many new windows as the file needs) and moves them to the ready
     /// pool. Empty windows go back to the waiting pool.
     pub fn fill_windows(&mut self) -> bool {
+        self.fill_windows_up_to(usize::MAX)
+    }
+
+    /// [`fill_windows`](Self::fill_windows), but with a window pool it stops
+    /// once `limit` windows have been made ready. Windows are read in file
+    /// order whatever the limit, so their contents and read ids do not
+    /// depend on it. With `read_whole_file` the whole file is read.
+    pub fn fill_windows_up_to(&mut self, limit: usize) -> bool {
         if self.done_reading_file {
             self.file = None;
             return true;
@@ -198,7 +206,11 @@ impl FASTAReader {
                 self.add_ready_window(win);
             }
         } else {
-            while !self.waiting_windows.is_empty()
+            let mut filled = 0usize;
+            // Stopping early loses nothing: the window that reaches the end
+            // of the file takes the rest of it, so nothing stays buffered.
+            while filled < limit
+                && !self.waiting_windows.is_empty()
                 && (!self.done_reading_file || self.line_place != READ_ALL)
             {
                 let mut win = self.get_waiting_window().unwrap();
@@ -208,6 +220,7 @@ impl FASTAReader {
 
                 if win.length > 0 {
                     self.add_ready_window(win);
+                    filled += 1;
                 } else {
                     self.add_waiting_window(win);
                 }
@@ -509,6 +522,102 @@ pub(crate) mod tests {
             s.push(char_for_symbol(c) as char);
         }
         s
+    }
+
+    /// Reads every window, keeping up to `in_flight` taken out of the pool
+    /// and returning them in read order, refilling with
+    /// `fill_windows_up_to(limit)` (or `fill_windows` for `None`) whenever no
+    /// window is ready. Returns each window's description without its
+    /// physical window id.
+    fn read_in_order(
+        path: &str,
+        max_windows: i32,
+        max_seq: u64,
+        max_overlap: u64,
+        limit: Option<usize>,
+        in_flight: usize,
+    ) -> Vec<String> {
+        let mut r = FASTAReader::new(path, max_windows, max_seq, max_overlap);
+        r.multithread = false;
+        let fill = |r: &mut FASTAReader| match limit {
+            None => r.fill_windows(),
+            Some(l) => r.fill_windows_up_to(l),
+        };
+        fill(&mut r);
+        let mut taken = std::collections::VecDeque::new();
+        let mut out = Vec::new();
+        for _ in 0..100_000 {
+            while taken.len() < in_flight {
+                if r.ready_windows.is_empty() {
+                    if r.done_reading_file {
+                        break;
+                    }
+                    fill(&mut r);
+                }
+                let mut got = false;
+                while let Some(w) = r.get_ready_window() {
+                    taken.push_back(w);
+                    got = true;
+                }
+                if !got {
+                    break;
+                }
+            }
+            match taken.pop_front() {
+                Some(w) => {
+                    let d = describe(&w);
+                    // Drop the physical window id, which depends on reuse.
+                    let mut parts: Vec<&str> = d.splitn(4, ' ').collect();
+                    parts.remove(2);
+                    out.push(parts.join(" "));
+                    r.add_waiting_window(w);
+                }
+                None if r.done_reading_file && r.ready_windows.is_empty() => return out,
+                None => {}
+            }
+        }
+        panic!("reader made no progress");
+    }
+
+    /// Bounded fills read the same windows, with the same contents and read
+    /// ids, as unbounded ones, whatever the limit, the pool size and the
+    /// number of windows out of the pool, including the windows still
+    /// buffered when the file ends.
+    #[test]
+    fn bounded_fills_read_the_same_windows() {
+        let mut contents = Vec::new();
+        let lens = [0usize, 1, 7, 16, 33, 120, 5, 64, 0, 41];
+        for (i, &n) in lens.iter().enumerate() {
+            contents.extend_from_slice(format!(">rec{i} some description\n").as_bytes());
+            let body: Vec<u8> = (0..n)
+                .map(|j| match (i * 7 + j * 13) % 11 {
+                    0 => b'N',
+                    1 => b'a',
+                    2 => b'R',
+                    3 | 4 => b'C',
+                    5 | 6 => b'G',
+                    7 | 8 => b'T',
+                    _ => b'A',
+                })
+                .collect();
+            for line in body.chunks(10) {
+                contents.extend_from_slice(line);
+                contents.push(b'\n');
+            }
+        }
+        let tmp = TempFasta::new("bounded", &contents);
+        for (max_seq, max_overlap) in [(16u64, 4u64), (8, 0), (40, 10)] {
+            for pool in 1..=6 {
+                let want = read_in_order(tmp.path(), pool, max_seq, max_overlap, None, pool as usize);
+                assert!(want.len() > 10);
+                for limit in 1..=4 {
+                    for in_flight in 1..=pool as usize {
+                        let got = read_in_order(tmp.path(), pool, max_seq, max_overlap, Some(limit), in_flight);
+                        assert_eq!(got, want, "seq {max_seq} ov {max_overlap} pool {pool} limit {limit} in flight {in_flight}");
+                    }
+                }
+            }
+        }
     }
 
     /// Drives the reader as single-threaded `Ultra::AnalyzeFile` /
