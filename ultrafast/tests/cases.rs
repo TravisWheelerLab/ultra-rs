@@ -349,6 +349,46 @@ fn non_sequence_bytes_do_not_shift_coordinates() {
     assert_eq!(got.len(), 1, "{got:?}");
 }
 
+/// Sequence before the first header is a record named "", as a header with
+/// nothing after '>' is. Two such records holding sequence are refused with
+/// a message naming them; a record without sequence may share a name, and
+/// ULTRA's calls go to the record that has the sequence.
+#[test]
+fn empty_and_shared_names() {
+    let d = dir("empty_names");
+    let mut st = 0x5eed_0005u64;
+    let mut seq = bases(&mut st, 1000);
+    seq.extend(b"CAG".repeat(40));
+    seq.extend(bases(&mut st, 1000));
+    let other = bases(&mut st, 500);
+    let fa = |name: &str, parts: &[&[u8]]| {
+        let p = d.join(name);
+        fs::write(&p, parts.concat()).unwrap();
+        p
+    };
+    for f in [
+        fa("before_and_bare.fa", &[&other, b"\n>\n", &seq, b"\n"]),
+        fa("two_bare.fa", &[b">\n", &other, b"\n> \n", &seq, b"\n"]),
+    ] {
+        let out = run(&["-t", "1"], &f);
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("\"\" occurs more than once (records 1 and 2)") && err.contains("empty name"), "{err}");
+    }
+    // no sequence after the bare header, or in the first or the last "seq1"
+    for f in [
+        fa("before_then_empty.fa", &[&seq, b"\n>\n"]),
+        fa("empty_first.fa", &[b">seq1\n>seq1 x\n", &seq, b"\n"]),
+        fa("empty_last.fa", &[b">seq1\n", &seq, b"\n>seq1 x\n"]),
+    ] {
+        let r = records(&["-t", "1"], &f);
+        let cag: Vec<_> = r.iter().filter(|x| span(x).2 == 3).collect();
+        assert_eq!(cag.len(), 1, "{f:?}: {r:?}");
+        let (s, e, _) = span(cag[0]);
+        assert!(s <= 1010 && e >= 1110, "{f:?}: {r:?}");
+    }
+}
+
 /// --revote-filler keeps the period when the middle copy of an ULTRA call is
 /// partly N (it seeded the vote with a shorter copy before).
 #[test]

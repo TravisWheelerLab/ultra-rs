@@ -65,6 +65,29 @@ pub fn read_fasta(path: &str) -> std::io::Result<Vec<Record>> {
     Ok(recs)
 }
 
+/// Fails if two records holding sequence have the same name. ULTRA's calls
+/// are matched to records by name, and the output names each call's record,
+/// so calls on two such records could not be told apart. A record without
+/// sequence gets no calls and may share its name.
+fn check_names(recs: &[Record]) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashMap::new();
+    for (i, r) in recs.iter().enumerate().filter(|(_, r)| !r.seq.is_empty()) {
+        if let Some(j) = seen.insert(r.name.as_str(), i) {
+            let empty = if r.name.is_empty() {
+                "; sequence before the first header, and a header with nothing after '>', have the empty name"
+            } else {
+                ""
+            };
+            anyhow::bail!(
+                "sequence name {:?} occurs more than once (records {} and {}), so calls on them could not be told apart; \
+                 names are the first word of each header{empty}",
+                r.name, j + 1, i + 1
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Run the TRF-style consensus caller on each array.
@@ -496,7 +519,9 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
                      model: &DeltaModel, max_cells: usize) -> anyhow::Result<Merged> {
     let Merge { filler_min, keep_filler_deltas, prefer_filler, filler_cap, filler_cons } = *merge_opt;
     let gcs: Vec<f64> = recs.par_iter().map(|r| gc_pct(&r.seq)).collect();
-    let idx: std::collections::HashMap<&str, usize> = recs.iter().enumerate().map(|(i, r)| (r.name.as_str(), i)).collect();
+    // a record without sequence gets no calls, and may share its name with one that has
+    let idx: std::collections::HashMap<&str, usize> =
+        recs.iter().enumerate().filter(|(_, r)| !r.seq.is_empty()).map(|(i, r)| (r.name.as_str(), i)).collect();
     // filler calls passing the cutoff: (seq index, start, end, record)
     let mut n_unmatched = 0;
     let fl: Vec<(usize, usize, usize, &UltraRecord)> = filler
@@ -825,9 +850,10 @@ impl Hybrid {
 /// Threads: `opt.threads` (0 = all cores) in total, split between ULTRA and FasTAN,
 /// which run at the same time; with 1 they run one after the other.
 ///
-/// Sequence names must be unique (the first word of each header, which is the
-/// SequenceName written). ULTRA reads the file itself, so `input` must be a path;
-/// `"-"` (stdin) works only when ULTRA isn't run (`ultra_period` 0 or `filler` given).
+/// Sequence names (the first word of each header, which is the SequenceName
+/// written) must be unique among records holding sequence. ULTRA reads the file
+/// itself, so `input` must be a path; `"-"` (stdin) works only when ULTRA isn't
+/// run (`ultra_period` 0 or `filler` given).
 ///
 /// ```no_run
 /// let h = ultrafast::hybrid("genome.fa", &ultrafast::HybridOptions::default()).unwrap();
@@ -857,10 +883,7 @@ fn hybrid_in_pool(input: &str, opt: &HybridOptions, ultra_threads: usize) -> any
     }
     let fo = Options { consensus: true, ..opt.fastan.clone() };
     let seqs = read_fasta(input)?;
-    let mut seen = std::collections::HashSet::new();
-    if let Some(r) = seqs.iter().find(|r| !seen.insert(r.name.as_str())) {
-        anyhow::bail!("sequence name {:?} occurs more than once (names are the first word of each header)", r.name);
-    }
+    check_names(&seqs)?;
     let fastan = || if opt.rescore_only { Vec::new() } else { annotate(&seqs, &fo) };
     let ultra = |p: usize| run_ultra(input, p, ultra_threads, opt.ultra_upstream_compat);
     let (arrays, ultra_calls) = match ultra_period {
