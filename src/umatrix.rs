@@ -94,6 +94,48 @@ pub struct UMatrix {
     /// Per-column best row, filled by [`UMatrix::calculate_traceback`].
     /// `length + 2` entries, zeroed at construction and never reset.
     pub traceback: Vec<i32>,
+
+    /// Where every cell of a column is past its warm-up, so that
+    /// `UModel::calculate_current_column` can take its steady-state path.
+    /// Set by [`UMatrix::create_matrix`].
+    pub steady: SteadyState,
+}
+
+/// Bounds past which no cell of a column takes a warm-up branch, every
+/// look-back column lies at or before the current one without wrapping, and
+/// every sequence index is in range. Derived from the cell layout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SteadyState {
+    /// The previous column index must be greater than this.
+    pub min_previous_column: i64,
+    /// The largest `d` any cell passes to `PreviousScore`.
+    pub max_lookback: i64,
+    /// The largest distance any cell reads back from the current symbol.
+    pub max_sequence_back: i64,
+}
+
+impl SteadyState {
+    /// The bounds for the cells in `desc`. A match cell of order `o` needs
+    /// `matind >= o`, looks back `o - 1` columns and reads `o` symbols back.
+    /// An insertion `(o, k)` needs `matind > 2o + k + 1`, looks back
+    /// `o + k + 1` and reads `2o + k` back. A deletion `(o, k)` needs
+    /// `matind > 3o`, looks back `o + 1` and reads `2o` back.
+    pub fn for_cells(desc: &[Cell]) -> Self {
+        let mut s = SteadyState::default();
+        for d in desc {
+            let (o, k) = (d.order as i64, d.indel_number as i64);
+            let (min_prev, lookback, seq_back) = match d.cell_type {
+                CT_MATCH => (o - 1, o - 1, o),
+                CT_INSERTION => (2 * o + k + 1, o + k + 1, 2 * o + k),
+                CT_DELETION => (3 * o, o + 1, 2 * o),
+                _ => (0, 0, 0),
+            };
+            s.min_previous_column = s.min_previous_column.max(min_prev);
+            s.max_lookback = s.max_lookback.max(lookback);
+            s.max_sequence_back = s.max_sequence_back.max(seq_back);
+        }
+        s
+    }
 }
 
 impl UMatrix {
@@ -120,6 +162,7 @@ impl UMatrix {
             last_score_adjustment: 0.0,
             total_score_adjustment: 0.0,
             traceback: Vec::new(),
+            steady: SteadyState::default(),
         };
         m.create_matrix();
         m
@@ -538,6 +581,7 @@ impl UMatrix {
         }
 
         self.cells_per_column = desc.len();
+        self.steady = SteadyState::for_cells(&desc);
         self.cell_descriptions = desc;
 
         // Rust zero-fills where the C++ mallocs uninitialised memory. Every

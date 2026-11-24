@@ -153,6 +153,12 @@ pub struct UModel {
     /// (or k * P - 1) with an insertion each copy outscores the true period.
     /// False by default; `Settings::upstream_compat` turns it on.
     pub upstream_indel_windows: bool,
+
+    /// Fill columns past the warm-up with
+    /// [`calculate_steady_column`](Self::calculate_steady_column), which
+    /// gives the same scores and tracebacks bit for bit. True by default;
+    /// tests turn it off to compare the two paths.
+    pub fast_columns: bool,
 }
 
 impl UModel {
@@ -195,6 +201,7 @@ impl UModel {
             immediate_transition_to_repeat: false,
             adjust_match_mismatch_matrix: true,
             upstream_indel_windows: false,
+            fast_columns: true,
         };
         m.calculate_scores();
         m
@@ -337,6 +344,10 @@ impl UModel {
         _can_be_repetitive: Option<&[bool]>,
     ) {
         let seq = sequence.seq();
+        if self.fast_columns && self.column_is_steady(seq.len(), nuc_index) {
+            self.calculate_steady_column(seq, nuc_index as usize);
+            return;
+        }
         let mscore = &self.mscore;
         let bscore = &self.bscore;
         let tscore = &self.tscore;
@@ -522,6 +533,160 @@ impl UModel {
                 _ => {}
             }
         }
+
+        m.move_matrix_forward();
+    }
+
+    /// Whether every cell of the current column is past its warm-up (see
+    /// [`SteadyState`](crate::umatrix::SteadyState)): no `matind` branch
+    /// applies, every look-back column is at or before the current one
+    /// without wrapping, and every sequence index is in range.
+    #[inline(always)]
+    fn column_is_steady(&self, seq_len: usize, nuc_index: i32) -> bool {
+        let m = &self.matrix;
+        let st = m.steady;
+        (m.previous_column_index as i64) > st.min_previous_column
+            && (m.current_column_index as i64) >= st.max_lookback
+            && (st.max_lookback as u64) < m.length as u64
+            && (nuc_index as i64) >= st.max_sequence_back
+            && (nuc_index as i64) < seq_len as i64
+    }
+
+    /// [`calculate_current_column`](Self::calculate_current_column) for a
+    /// steady column. The rows are walked in layout order (match row of
+    /// order `o`, then its insertions, then its deletions) without looking
+    /// up each cell's description, and the look-back columns are addressed
+    /// directly. Every cell does the same floating-point operations in the
+    /// same order as the general path, and the max into a parent row keeps
+    /// the first strictly greater score, so the result is identical.
+    fn calculate_steady_column(&mut self, seq: &[Symbol], i: usize) {
+        let mscore = &self.mscore;
+        let bscore = &self.bscore;
+        let tscore = &self.tscore;
+        let period_decay = self.period_decay;
+        let period_decay_offset = self.period_decay_offset;
+        let immediate = self.immediate_transition_to_repeat;
+
+        let bg = CT_BACKGROUND as usize;
+        let ma = CT_MATCH as usize;
+        let ins = CT_INSERTION as usize;
+        let del = CT_DELETION as usize;
+        let t_bg_bg = tscore[bg][bg];
+        let t_ma_bg = tscore[ma][bg];
+        let t_bg_ma = tscore[bg][ma];
+        let t_ma_ma = tscore[ma][ma];
+        let t_in_ma = tscore[ins][ma];
+        let t_de_ma = tscore[del][ma];
+
+        let m = &mut self.matrix;
+        let cpc = m.cells_per_column;
+        let cur = m.current_column_index;
+        let tbr = m.max_period + 1;
+        let max_period = m.max_period;
+        let max_ins = m.max_insertions;
+        let max_del = m.max_deletions;
+
+        let ct = &mut m.traceback_matrix[cur * tbr..(cur + 1) * tbr];
+        let (before, rest) = m.score_matrix.split_at_mut(cur * cpc);
+        let c = &mut rest[..cpc];
+        let p = &before[(cur - 1) * cpc..];
+        // Row `r` of the column `d >= 1` columns back.
+        let back = |r: usize, d: usize| -> f32 { before[(cur - d) * cpc + r] };
+
+        let s_i = seq[i] as usize;
+        let b_i = bscore[s_i];
+        // emission_score(i, q)
+        let emit = |q: usize| -> f32 { mscore[seq[i - q] as usize][s_i] - b_i };
+        // previous_emission_score(i, q, d): symbol i - d against i - d - q.
+        let emit_back = |q: usize, d: usize| -> f32 {
+            let at = i - d;
+            let s = seq[at] as usize;
+            let b = bscore[s];
+            let v = mscore[seq[at - q] as usize][s];
+            v - b
+        };
+
+        c[0] = p[0] + t_bg_bg;
+        ct[0] = 0;
+
+        let mut r = 1usize;
+        let mut o = 1usize;
+        while o < max_period {
+            let order = o as f32;
+
+            // The match row: first its exit to the background row.
+            let mut score = p[r] + t_ma_bg;
+            score += order * period_decay;
+            score += period_decay_offset;
+            if score > c[0] {
+                c[0] = score;
+                ct[0] = r as i32;
+            }
+
+            let zscore = if immediate {
+                p[0]
+            } else {
+                // Order 1 reads the current column's background row live.
+                let z = if o == 1 { c[0] } else { back(0, o - 1) };
+                z + t_bg_bg * order
+            };
+            let es = emit(o);
+            let mut best = zscore + t_bg_ma + es;
+            let mut best_from = 0i32;
+            let stay = p[r] + t_ma_ma + es;
+            if stay > best {
+                best = stay;
+                best_from = r as i32;
+            }
+
+            let n_ins = max_ins.min(o - 1);
+            let n_del = max_del.min(o - 1);
+
+            for k in 1..=n_ins {
+                let row = r + k;
+                let per = o + k;
+                let pr = p[row];
+                let exit = pr + t_in_ma + es;
+                if exit > best {
+                    best = exit;
+                    best_from = row as i32;
+                }
+                let mut v = pr;
+                v -= back(r, per + 1);
+                v += back(r, per);
+                v -= emit_back(per, o);
+                v += emit(per);
+                c[row] = v;
+            }
+
+            let parent_o1 = back(r, o + 1);
+            let parent_o = back(r, o);
+            for k in 1..=n_del {
+                let row = r + n_ins + k;
+                let del_order = o - k;
+                let e_order = 2 * o - k;
+                let pr = p[row];
+                let exit = pr + t_de_ma + es;
+                if exit > best {
+                    best = exit;
+                    best_from = row as i32;
+                }
+                let mut v = pr;
+                v -= parent_o1;
+                v += parent_o;
+                v -= emit_back(del_order, o);
+                v += emit_back(del_order, k);
+                v -= emit_back(e_order, k);
+                v += emit(e_order);
+                c[row] = v;
+            }
+
+            c[r] = best;
+            ct[o] = best_from;
+            r += 1 + n_ins + n_del;
+            o += 1;
+        }
+        debug_assert_eq!(r, cpc);
 
         m.move_matrix_forward();
     }
@@ -774,6 +939,97 @@ mod tests {
         let pc = m.matrix.previous_column_index;
         m.matrix.calculate_traceback(pc);
         h
+    }
+
+    /// Random sequence with tandem arrays (substitutions, insertions and
+    /// deletions in the copies), lowercase stretches and runs of N.
+    fn mixed_sequence(len: usize, max_unit: usize, seed: u64) -> String {
+        let mut x = seed;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let bases = b"ACGT";
+        let mut out = Vec::with_capacity(len);
+        while out.len() < len {
+            match next() % 4 {
+                0 | 1 => {
+                    for _ in 0..(next() % 200) {
+                        out.push(bases[(next() % 4) as usize]);
+                    }
+                }
+                2 => {
+                    let unit_len = 1 + (next() as usize % max_unit);
+                    let unit: Vec<u8> = (0..unit_len).map(|_| bases[(next() % 4) as usize]).collect();
+                    let lower = next() % 3 == 0;
+                    for _ in 0..(2 + next() % 8) {
+                        for &b in &unit {
+                            let b = if lower { b.to_ascii_lowercase() } else { b };
+                            match next() % 20 {
+                                0 => {}                                      // deletion
+                                1 => { out.push(b); out.push(bases[(next() % 4) as usize]); } // insertion
+                                2 => out.push(bases[(next() % 4) as usize]), // substitution
+                                _ => out.push(b),
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    for _ in 0..(1 + next() % 30) {
+                        out.push(b'N');
+                    }
+                }
+            }
+        }
+        out.truncate(len);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The steady-state column gives the same scores and tracebacks, bit for
+    /// bit, as the general path, for small and large periods, with indel
+    /// counts below and above the order, with many states (13,796 for the
+    /// largest shape), and with each model switch.
+    #[test]
+    fn steady_columns_match_general_path() {
+        // (max period, insertions, deletions, sequence length)
+        let shapes = [
+            (2, 0, 0, 300),
+            (8, 3, 3, 400),
+            (12, 20, 20, 400),
+            (31, 10, 10, 700),
+            (101, 10, 10, 1200),
+            (300, 40, 8, 1400),
+        ];
+        for (si, &(mp, ins, del, n)) in shapes.iter().enumerate() {
+            let s = mixed_sequence(n, (mp as usize - 1).max(1), 0x9e3779b97f4a7c15 ^ si as u64);
+            let mlen = n as i32 + 3;
+            for variant in 0..4 {
+                let (adjmax, immediate, upstream) = match variant {
+                    0 => (false, false, false),
+                    1 => (false, false, true),
+                    2 => (true, false, false),
+                    _ => (false, true, false),
+                };
+                let mut hashes = Vec::new();
+                for fast in [false, true] {
+                    let mut m = ultra_model_with(mp, ins, del, mlen, adjmax, immediate, upstream);
+                    m.fast_columns = fast;
+                    assert!(
+                        (m.matrix.steady.min_previous_column as usize) + 10 < n,
+                        "shape {si} never reaches a steady column"
+                    );
+                    let mut w = SequenceWindow::new(mlen as usize, 0);
+                    hashes.push((run_window(&mut m, &mut w, &s), m.matrix.traceback.clone()));
+                }
+                assert!(
+                    hashes[0] == hashes[1],
+                    "shape {:?} variant {variant}: steady columns differ from the general path",
+                    shapes[si]
+                );
+            }
+        }
     }
 
     #[test]
