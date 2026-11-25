@@ -30,85 +30,10 @@
 use crate::consensus::code;
 use anyhow::{anyhow, bail, Context, Result};
 
-/// One step of an array's alignment to its cyclic consensus.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Op {
-    /// Array base aligned to consensus column `col`.
-    M(u32),
-    /// Array base not in the consensus (insertion).
-    I,
-    /// Consensus column `col` skipped (deletion from the array).
-    D(u32),
-}
-
-const BM: u8 = 1;
-const BI: u8 = 2;
-const BD: u8 = 3;
+pub use crate::wrap::Op;
 
 fn align_window_path(s: &[u8], u: &[u8], cm: i32, ci: i32, out: &mut Vec<Op>) {
-    use crate::consensus::{bt_get, pack_row, row_bytes};
-    let l = u.len();
-    let n = s.len();
-    let rb = row_bytes(l);
-    let mut bt = vec![0u8; (n + 1) * rb];
-    let mut row = vec![0u8; l];
-    let mut d = vec![0i32; l];
-    let mut e = vec![0i32; l];
-    for i in 1..=n {
-        let a = s[i - 1];
-        let b = &mut row[..];
-        for k in 0..l {
-            let pk = if k > 0 { k - 1 } else { l - 1 };
-            let m = d[pk] + if a == 4 || u[pk] != a { cm } else { 0 };
-            let ins = d[k] + ci;
-            if m <= ins {
-                e[k] = m;
-                b[k] = BM;
-            } else {
-                e[k] = ins;
-                b[k] = BI;
-            }
-        }
-        let mut j = 0;
-        for _ in 0..2 * l {
-            let nj = if j + 1 == l { 0 } else { j + 1 };
-            if e[j] + ci < e[nj] {
-                e[nj] = e[j] + ci;
-                b[nj] = BD;
-            }
-            j = nj;
-        }
-        pack_row(b, &mut bt[i * rb..(i + 1) * rb]);
-        std::mem::swap(&mut d, &mut e);
-    }
-    let mut best = 0;
-    for j in 1..l {
-        if d[j] < d[best] {
-            best = j;
-        }
-    }
-    let (mut i, mut k) = (n, best);
-    let start = out.len();
-    while i > 0 {
-        let b = bt_get(&bt, rb, i, k);
-        let pk = if k > 0 { k - 1 } else { l - 1 };
-        match b {
-            BI => {
-                out.push(Op::I);
-                i -= 1;
-            }
-            BM => {
-                out.push(Op::M(pk as u32));
-                i -= 1;
-                k = pk;
-            }
-            _ => {
-                out.push(Op::D(pk as u32));
-                k = pk;
-            }
-        }
-    }
-    out[start..].reverse();
+    crate::wrap::align(s, u, cm, ci, &mut crate::wrap::Scratch::new(), out);
 }
 
 /// Alignment path of `array` to the cyclic `unit` (both ASCII), minimising

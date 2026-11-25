@@ -10,6 +10,7 @@
 //! ```
 
 pub mod consensus;
+pub mod wrap;
 pub mod fastan;
 
 use rayon::prelude::*;
@@ -266,6 +267,7 @@ impl ultra_repeats::writers::RepeatFileWriter for Collect {
             position_score_deltas: r.scores.as_ref().map(|v| v[..len.min(v.len())].iter().map(|&x| num(x)).collect()).unwrap_or_default(),
             matrix: None,
             sub_repeats,
+            scored_alignment: None,
         };
         self.0.lock().expect("collector lock").push(rec);
         Ok(())
@@ -344,6 +346,34 @@ pub struct UltraRecord {
     /// record's Start); absent for an unsplit array. Aurora 0.x ignores this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_repeats: Vec<SubRepeat>,
+    /// ultrafast only, not written to the JSON: the alignment to `consensus` that the
+    /// Score and deltas were computed along, for a call that ultrafast scored itself and
+    /// did not split. BPAF output writes this alignment, so the record's Score describes
+    /// the alignment stored with it. Its own `score` field is not set.
+    #[serde(skip)]
+    pub scored_alignment: Option<ultra_repeats::wrap_align::Alignment>,
+}
+
+/// A scoring path as the alignment type BPAF output takes.
+fn to_alignment(ops: &[deltas::Op], period: usize) -> ultra_repeats::wrap_align::Alignment {
+    use ultra_repeats::wrap_align::{Alignment, Op};
+    let phase = ops.iter().find_map(|o| match o {
+        deltas::Op::M(c) | deltas::Op::D(c) => Some(*c as usize),
+        deltas::Op::I => None,
+    });
+    let mut runs: Vec<(Op, u64)> = Vec::new();
+    for o in ops {
+        let k = match o {
+            deltas::Op::M(_) => Op::Aligned,
+            deltas::Op::I => Op::Inserted,
+            deltas::Op::D(_) => Op::Skipped,
+        };
+        match runs.last_mut() {
+            Some(r) if r.0 == k => r.1 += 1,
+            _ => runs.push((k, 1)),
+        }
+    }
+    Alignment { period, phase: phase.unwrap_or(0), runs, score: 0 }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -355,12 +385,16 @@ pub struct SubRepeat {
 
 impl UltraRecord {
     /// The call aligned to its consensus, one part per sub-repeat (or one
-    /// for the whole call), as `ultra` aligns its repeats: see
-    /// [`ultra_repeats::wrap_align::align_parts`]. `seq` is the whole
+    /// for the whole call): the alignment its Score was computed along when
+    /// ultrafast scored the call (`scored_alignment`), else as `ultra` aligns
+    /// its repeats, see [`ultra_repeats::wrap_align::align_parts`]. `seq` is the whole
     /// sequence the call is on; the call is clipped to it.
     pub fn consensus_alignment(&self, seq: &[u8]) -> Vec<ultra_repeats::wrap_align::Part> {
         let start = self.start.min(seq.len());
         let end = self.start.saturating_add(self.length).min(seq.len());
+        if let Some(a) = self.scored_alignment.as_ref().filter(|a| self.sub_repeats.is_empty() && a.bases() == (end - start) as u64) {
+            return vec![ultra_repeats::wrap_align::Part { start: 0, end: end - start, consensus: self.consensus.as_bytes().to_vec(), alignment: a.clone() }];
+        }
         let parts: Vec<(usize, &[u8])> = if self.sub_repeats.is_empty() {
             vec![(0, self.consensus.as_bytes())]
         } else {
@@ -398,6 +432,12 @@ fn gc_pct(seq: &[u8]) -> f64 {
 /// Deltas and their sum for seq[start..end] against `unit`.
 pub fn score_region(seq: &[u8], seq_gc: f64, start: usize, end: usize, unit: &[u8], model: &DeltaModel, max_cells: usize)
     -> anyhow::Result<(Vec<f64>, Option<String>)> {
+    score_region_path(seq, seq_gc, start, end, unit, model, max_cells).map(|(d, m, _)| (d, m))
+}
+
+/// [`score_region`], also returning the alignment path the deltas were computed along.
+fn score_region_path(seq: &[u8], seq_gc: f64, start: usize, end: usize, unit: &[u8], model: &DeltaModel, max_cells: usize)
+    -> anyhow::Result<(Vec<f64>, Option<String>, Vec<deltas::Op>)> {
     let arr = &seq[start..end];
     let costs = match model { DeltaModel::Ultra => deltas::ULTRA_COSTS, DeltaModel::Te { .. } => deltas::TE_COSTS };
     let ops = deltas::path(arr, unit, max_cells, costs);
@@ -418,7 +458,7 @@ pub fn score_region(seq: &[u8], seq_gc: f64, start: usize, end: usize, unit: &[u
             (deltas::te_deltas(seq, start, unit, &ops, m, *window), Some(m.name.clone()))
         }
     };
-    Ok((d, mname))
+    Ok((d, mname, ops))
 }
 
 fn count_matches(arr: &[u8], unit: &[u8], ops: &[deltas::Op]) -> usize {
@@ -673,6 +713,7 @@ pub fn join_filler(recs: &[Record], filler: &[UltraRecord]) -> Vec<UltraRecord> 
             consensus,
             position_score_deltas: Vec::new(),
             sub_repeats: if parts.len() < 2 { Vec::new() } else { parts },
+            scored_alignment: None,
             ..a
         });
     }
@@ -745,11 +786,13 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
     //    no copy before it to be compared with, is scored against the copy after it.
     // A fragment of one larger filler call (it covers more than half of the FasTAN call,
     // which covers no more than half of it) is not compared.
-    let verdicts: Vec<(bool, Vec<usize>)> = calls
+    // The third field is the FasTAN call's deltas under ULTRA's model when the comparison computed
+    // them: the final scoring below reuses them instead of aligning the array again.
+    let verdicts: Vec<(bool, Vec<usize>, Option<(Vec<f64>, Vec<deltas::Op>)>)> = calls
         .par_iter()
         .with_max_len(1)
         .map(|c| {
-            let none = (false, Vec::new());
+            let none = (false, Vec::new(), None);
             let Some(cap) = filler_cap.filter(|_| prefer_filler) else { return none };
             let period = period_of(c);
             if period <= cap {
@@ -771,7 +814,8 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
             }
             let seq = &recs[c.seq].seq;
             let score = |arr: &[u8], unit: &[u8]| deltas::ultra_deltas(arr, unit.len(), &deltas::path(arr, unit, max_cells, deltas::ULTRA_COSTS));
-            let fastan = score(&seq[cs..ce], &c.unit);
+            let fastan_path = deltas::path(&seq[cs..ce], &c.unit, max_cells, deltas::ULTRA_COSTS);
+            let fastan = deltas::ultra_deltas(&seq[cs..ce], c.unit.len(), &fastan_path);
             let mut filler_total = 0.0;
             let mut most_shared = (0, 0); // (shared bases, period) of the filler call sharing the most
             let theirs: Vec<f64> = over
@@ -791,8 +835,9 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
                 })
                 .collect();
             let longer = period.saturating_sub(most_shared.1) as f64;
+            let reuse = matches!(model, DeltaModel::Ultra).then(|| (fastan.clone(), fastan_path));
             if fastan.iter().sum::<f64>() <= filler_total + UNIT_BASE_BITS * longer {
-                return none;
+                return (false, Vec::new(), reuse);
             }
             // the first copy against the copy after it: score the array read backwards
             let mut ours = fastan;
@@ -814,7 +859,7 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
                 })
                 .map(|(x, _)| x.2)
                 .collect();
-            (true, beaten)
+            (true, beaten, reuse)
         })
         .collect();
     // with FasTAN preferred, all FasTAN calls together suppress filler calls
@@ -843,12 +888,12 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
     for v in &verdicts {
         v.1.iter().for_each(|&i| beaten[i] = true);
     }
-    type Job<'a> = (usize, usize, usize, Vec<u8>, usize, Option<&'a UltraRecord>, bool, Vec<(usize, Vec<u8>)>, bool);
+    type Job<'a> = (usize, usize, usize, Vec<u8>, usize, Option<&'a UltraRecord>, bool, Vec<(usize, Vec<u8>)>, bool, Option<&'a (Vec<f64>, Vec<deltas::Op>)>);
     let mut jobs: Vec<Job> = calls
         .iter()
         .enumerate()
         .filter(|&(i, _)| kept[i])
-        .map(|(_, c)| (c.seq, c.start, c.end, c.unit.clone(), period_of(c), None, false, c.parts.clone(), false))
+        .map(|(i, c)| (c.seq, c.start, c.end, c.unit.clone(), period_of(c), None, false, c.parts.clone(), false, verdicts[i].2.as_ref()))
         .collect();
     let mut nfill = 0;
     for (i, &(si, s, e, f)) in fl.iter().enumerate() {
@@ -858,14 +903,14 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
         let keep = keep_filler_deltas && f.position_score_deltas.len() == f.length && e == f.start + f.length;
         let revote = filler_cons.is_some_and(|o| f.period >= 1 && f.period <= o.max_cons_period);
         let fparts = f.sub_repeats.iter().filter(|x| x.start < e - s).map(|x| (x.start, x.consensus.as_bytes().to_vec())).collect();
-        jobs.push((si, s, e, f.consensus.as_bytes().to_vec(), f.period, keep.then_some(f), revote, fparts, true));
+        jobs.push((si, s, e, f.consensus.as_bytes().to_vec(), f.period, keep.then_some(f), revote, fparts, true, None));
         nfill += 1;
     }
     jobs.sort_by_key(|j| (j.0, j.1, j.2));
     let out: anyhow::Result<Vec<UltraRecord>> = jobs
         .par_iter()
         .with_max_len(1)
-        .map(|(si, s, e, unit, period, kept, revote, parts, is_filler)| {
+        .map(|(si, s, e, unit, period, kept, revote, parts, is_filler, scored)| {
             let seq = &recs[*si].seq;
             let (unit, period, parts) = match (revote, filler_cons, filler_split) {
                 (true, Some(o), _) => {
@@ -894,7 +939,19 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
                     ..(*f).clone()
                 });
             }
-            let (d, matrix) = score_region(seq, gcs[*si], *s, *e, unit, model, max_cells)?;
+            // a FasTAN call keeps its unit and span from the comparison, so its deltas are the same
+            let fresh;
+            let (d, matrix, ops): (Vec<f64>, _, &[deltas::Op]) = match scored {
+                Some((d, ops)) => (d.clone(), None, ops),
+                None => {
+                    let (d, m, ops) = score_region_path(seq, gcs[*si], *s, *e, unit, model, max_cells)?;
+                    fresh = ops;
+                    (d, m, &fresh)
+                }
+            };
+            // the path's columns are the unit's own when it is plain ACGT
+            let plain = !unit.is_empty() && unit.iter().all(|c| matches!(c, b'A' | b'C' | b'G' | b'T'));
+            let scored_alignment = (sub_repeats.is_empty() && plain).then(|| to_alignment(ops, unit.len()));
             Ok(UltraRecord {
                 sequence_name: recs[*si].name.clone(),
                 start: *s,
@@ -905,6 +962,7 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
                 position_score_deltas: d.into_iter().map(round6).collect(),
                 matrix,
                 sub_repeats,
+                scored_alignment,
             })
         })
         .collect();
@@ -1262,6 +1320,7 @@ mod tests {
             position_score_deltas: vec![1.0; length],
             matrix: None,
             sub_repeats: Vec::new(),
+            scored_alignment: None,
         };
         // 10 copies, one copy with three substitutions that ULTRA left out, 10 copies
         let mut seq = unit.repeat(10);

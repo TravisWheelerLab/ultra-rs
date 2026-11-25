@@ -17,10 +17,6 @@
 
 use rayon::prelude::*;
 
-const BM: u8 = 1;
-const BI: u8 = 2;
-const BD: u8 = 3;
-
 /// Base code: A C G T -> 0..3, anything else -> 4.
 #[inline]
 pub fn code(c: u8) -> u8 {
@@ -85,145 +81,54 @@ impl Profile {
     }
 }
 
-impl Scratch {
-    fn new() -> Scratch {
-        Scratch { bt: Vec::new(), row: Vec::new(), d: Vec::new(), e: Vec::new() }
-    }
-}
-
-struct Scratch {
-    /// Traceback, 2 bits per cell (`pack_row`).
-    bt: Vec<u8>,
-    /// The current row's traceback, a byte per cell.
-    row: Vec<u8>,
-    d: Vec<i32>,
-    e: Vec<i32>,
-}
-
-/// Bytes per traceback row of `l` cells at 2 bits per cell.
-#[inline]
-pub(crate) fn row_bytes(l: usize) -> usize {
-    l.div_ceil(4)
-}
-
-/// Pack a row of traceback codes (0-3) into 2 bits per cell.
-#[inline]
-pub(crate) fn pack_row(row: &[u8], dst: &mut [u8]) {
-    let mut chunks = row.chunks_exact(4);
-    for (d, ch) in dst.iter_mut().zip(&mut chunks) {
-        // four codes, one per byte, to 2 bits each
-        let x = u32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]);
-        *d = ((x & 3) | ((x >> 6) & 0xC) | ((x >> 12) & 0x30) | ((x >> 18) & 0xC0)) as u8;
-    }
-    let rest = chunks.remainder();
-    if !rest.is_empty() {
-        let mut x = 0u8;
-        for (t, &b) in rest.iter().enumerate() {
-            x |= b << (2 * t);
-        }
-        dst[row.len() / 4] = x;
-    }
-}
-
-/// Traceback code of cell (i, k) in a packed traceback with `rb` bytes per row.
-#[inline]
-pub(crate) fn bt_get(bt: &[u8], rb: usize, i: usize, k: usize) -> u8 {
-    (bt[i * rb + k / 4] >> (2 * (k % 4))) & 3
-}
+use crate::wrap::{Op, Scratch};
 
 /// Align s to cyclic u; add to the profile; return the edit distance.
 fn align_window(s: &[u8], u: &[u8], sc: &mut Scratch, p: &mut Profile, mut cols: Option<&mut [i32]>) -> u64 {
-    let l = u.len();
-    let n = s.len();
-    let rb = row_bytes(l);
-    let need = (n + 1) * rb;
-    if sc.bt.len() < need {
-        sc.bt.resize(need, 0);
-    }
-    sc.row.clear();
-    sc.row.resize(l, 0);
-    sc.d.clear();
-    sc.d.resize(l, 0);
-    sc.e.clear();
-    sc.e.resize(l, 0);
-    let (mut d, mut e) = (std::mem::take(&mut sc.d), std::mem::take(&mut sc.e));
-    let bt = &mut sc.bt;
-    let b: &mut [u8] = &mut sc.row[..l];
-    for i in 1..=n {
-        let a = s[i - 1];
-        for k in 0..l {
-            let pk = if k > 0 { k - 1 } else { l - 1 };
-            let m = d[pk] + if a == 4 || u[pk] != a { 1 } else { 0 };
-            let ins = d[k] + 1;
-            if m <= ins {
-                e[k] = m;
-                b[k] = BM;
-            } else {
-                e[k] = ins;
-                b[k] = BI;
-            }
-        }
-        // deletions wrap around the cycle: two passes settle them
-        let mut j = 0;
-        for _ in 0..2 * l {
-            let nj = if j + 1 == l { 0 } else { j + 1 };
-            if e[j] + 1 < e[nj] {
-                e[nj] = e[j] + 1;
-                b[nj] = BD;
-            }
-            j = nj;
-        }
-        pack_row(b, &mut bt[i * rb..(i + 1) * rb]);
-        std::mem::swap(&mut d, &mut e);
-    }
-    let mut best = 0;
-    for j in 1..l {
-        if d[j] < d[best] {
-            best = j;
-        }
-    }
-    let ed = d[best] as u64;
+    let mut ops = Vec::with_capacity(s.len() + s.len() / 8);
+    let (cost, best) = crate::wrap::align(s, u, 1, 1, sc, &mut ops);
 
-    // traceback: events come in reverse; an insertion run at slot k ends
-    // (going backwards) when slot k is left by a match or deletion
-    let (mut i, mut k) = (n, best);
+    // the steps backwards: an insertion run at slot k ends (going backwards) when slot
+    // k is left by a match or deletion
+    let (mut i, mut k) = (s.len(), best);
     let (mut pending, mut first) = (false, 4u8);
-    while i > 0 {
-        let b = bt_get(bt, rb, i, k);
-        let pk = if k > 0 { k - 1 } else { l - 1 };
-        if b == BI {
-            pending = true;
-            first = s[i - 1];
-            if let Some(c) = cols.as_deref_mut() {
-                c[i - 1] = -1;
+    for op in ops.iter().rev() {
+        let pk = match *op {
+            Op::I => {
+                pending = true;
+                first = s[i - 1];
+                if let Some(c) = cols.as_deref_mut() {
+                    c[i - 1] = -1;
+                }
+                i -= 1;
+                continue;
+            }
+            Op::M(pk) | Op::D(pk) => pk as usize,
+        };
+        p.cross[k] += 1;
+        if pending {
+            p.ins[k] += 1;
+            if first < 4 {
+                p.ilet[k * 4 + first as usize] += 1;
+            }
+            pending = false;
+        }
+        if matches!(op, Op::M(_)) {
+            let c = s[i - 1];
+            if c < 4 {
+                p.cnt[pk * 5 + c as usize] += 1;
+            }
+            if let Some(cc) = cols.as_deref_mut() {
+                cc[i - 1] = pk as i32;
             }
             i -= 1;
         } else {
-            p.cross[k] += 1;
-            if pending {
-                p.ins[k] += 1;
-                if first < 4 {
-                    p.ilet[k * 4 + first as usize] += 1;
-                }
-                pending = false;
-            }
-            if b == BM {
-                let c = s[i - 1];
-                if c < 4 {
-                    p.cnt[pk * 5 + c as usize] += 1;
-                }
-                if let Some(cc) = cols.as_deref_mut() {
-                    cc[i - 1] = pk as i32;
-                }
-                i -= 1;
-            } else {
-                p.cnt[pk * 5 + 4] += 1;
-            }
-            if pk == 0 {
-                p.wraps += 1;
-            }
-            k = pk;
+            p.cnt[pk * 5 + 4] += 1;
         }
+        if pk == 0 {
+            p.wraps += 1;
+        }
+        k = pk;
     }
     if pending {
         p.cross[k] += 1;
@@ -232,9 +137,7 @@ fn align_window(s: &[u8], u: &[u8], sc: &mut Scratch, p: &mut Profile, mut cols:
             p.ilet[k * 4 + first as usize] += 1;
         }
     }
-    sc.d = d;
-    sc.e = e;
-    ed
+    cost
 }
 
 fn window_len(n: usize, l: usize, par: &Params) -> usize {
