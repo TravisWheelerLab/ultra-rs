@@ -4,9 +4,10 @@
 //! The reference is the C++ ULTRA at commit 7947d0d, which is 1.2.2 plus the
 //! bug fixes this port also makes (TravisWheelerLab/ULTRA pull request 95).
 //! The binary is taken from `$ULTRA_REF_BIN`, or from
-//! `upstream/build-fixed/ultra` under the crate root. When neither exists
-//! the tests print a notice and pass, so the suite still runs on a machine
-//! without a C++ build. Pointing `$ULTRA_REF_BIN` at a build of stock 1.2.2
+//! `upstream/build-fixed/ultra` under the crate root. The tests are marked
+//! `#[ignore]`, so a plain `cargo test` does not run them; run them with
+//! `cargo test --test differential -- --ignored`, which fails when neither
+//! binary exists. Pointing `$ULTRA_REF_BIN` at a build of stock 1.2.2
 //! shows which outputs the fixes change.
 //!
 //! To build the reference from the crate root:
@@ -87,7 +88,7 @@ fn ref_bin() -> Option<PathBuf> {
             Some(candidate)
         } else {
             eprintln!(
-                "differential tests skipped: no reference binary at {} (set ULTRA_REF_BIN)",
+                "no reference binary at {} (set ULTRA_REF_BIN)",
                 candidate.display()
             );
             None
@@ -588,9 +589,9 @@ fn check(case: &Case, reference: &Path) -> Vec<String> {
 /// Runs a batch of cases a few at a time and fails with a report of every
 /// case that differed.
 fn run_cases(cases: Vec<Case>) {
-    let Some(reference) = ref_bin() else {
-        return;
-    };
+    // These tests are run on request (`cargo test -- --ignored`), so a missing
+    // reference is a failure, not a pass.
+    let reference = ref_bin().expect("no C++ reference binary: build it as the top of this file says, or set ULTRA_REF_BIN");
 
     let next = AtomicUsize::new(0);
     let failures: Mutex<Vec<(String, Vec<String>)>> = Mutex::new(Vec::new());
@@ -640,11 +641,13 @@ fn matrix(inputs: &[&'static str], arg_strs: &[&str]) -> Vec<Case> {
 
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn default_run() {
     run_cases(matrix(&["ex1", "ex2", "ex3", "edge", "mixed"], &[""]));
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn output_formats() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
@@ -673,6 +676,7 @@ fn output_formats() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn output_detail_flags() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
@@ -703,6 +707,7 @@ fn output_detail_flags() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn masking() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed", "maskcorners"],
@@ -718,6 +723,7 @@ fn masking() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn filters() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
@@ -735,6 +741,7 @@ fn filters() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn model_size() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
@@ -758,6 +765,7 @@ fn model_size() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn probabilities() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
@@ -787,6 +795,7 @@ fn probabilities() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn splitting() {
     run_cases(matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
@@ -809,6 +818,7 @@ fn splitting() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn windowing() {
     let mut cases = matrix(
         &["ex2", "ex3", "edge", "mixed", "long"],
@@ -836,6 +846,7 @@ fn windowing() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn informational_and_errors() {
     let mut cases = matrix(
         &["ex1"],
@@ -900,6 +911,7 @@ fn informational_and_errors() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn threads_match_single_threaded_reference() {
     let mut cases = Vec::new();
     for input in ["ex2", "ex3", "edge", "mixed", "long"] {
@@ -927,6 +939,7 @@ fn threads_match_single_threaded_reference() {
 }
 
 #[test]
+#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
 fn shuffled_paths_have_the_same_shape() {
     let mut cases = Vec::new();
     for (input, a) in [

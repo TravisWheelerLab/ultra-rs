@@ -639,12 +639,15 @@ fn bridge_cost(seq: &[u8], a_start: usize, a_end: usize, b_start: usize, b_end: 
 /// the longer piece's unit, has the pieces' units as SubRepeats where they differ, and
 /// carries no deltas, so it is scored again over its whole span.
 /// Returns the calls in the order given, joined ones at the place of their first piece.
-pub fn join_filler(recs: &[Record], filler: &[UltraRecord]) -> Vec<UltraRecord> {
-    let idx: std::collections::HashMap<&str, usize> = recs.iter().enumerate().map(|(i, r)| (r.name.as_str(), i)).collect();
+pub fn join_filler<F: std::borrow::Borrow<UltraRecord>>(recs: &[Record], filler: &[F]) -> Vec<UltraRecord> {
+    let filler: Vec<&UltraRecord> = filler.iter().map(|f| f.borrow()).collect();
+    // a record without sequence may share its name with one that has
+    let idx: std::collections::HashMap<&str, usize> =
+        recs.iter().enumerate().filter(|(_, r)| !r.seq.is_empty()).map(|(i, r)| (r.name.as_str(), i)).collect();
     let name = |f: &UltraRecord| f.sequence_name.split_whitespace().next().unwrap_or("").to_string();
     let mut order: Vec<usize> = (0..filler.len()).collect();
-    order.sort_by(|&a, &b| (name(&filler[a]), filler[a].start, filler[a].length).cmp(&(name(&filler[b]), filler[b].start, filler[b].length)));
-    let mut out: Vec<Option<UltraRecord>> = filler.iter().cloned().map(Some).collect();
+    order.sort_by(|&a, &b| (name(filler[a]), filler[a].start, filler[a].length).cmp(&(name(filler[b]), filler[b].start, filler[b].length)));
+    let mut out: Vec<Option<UltraRecord>> = filler.iter().map(|&f| Some(f.clone())).collect();
     // (sequence, period) -> index in `out` of the last call of that period
     let mut open: std::collections::HashMap<(String, usize), usize> = std::collections::HashMap::new();
     let debug = std::env::var_os("ULTRAFAST_JOIN_DEBUG").is_some();
@@ -735,13 +738,6 @@ fn consensus_cyclic_eq(a: &[u8], b: &[u8]) -> bool {
 pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], merge_opt: &Merge,
                      model: &DeltaModel, max_cells: usize) -> anyhow::Result<Merged> {
     let Merge { filler_min, keep_filler_deltas, prefer_filler, filler_cap, filler_cons, filler_split, filler_join } = *merge_opt;
-    let joined: Vec<UltraRecord>;
-    let filler: &[UltraRecord] = if filler_join {
-        joined = join_filler(recs, filler);
-        &joined
-    } else {
-        filler
-    };
     let gcs: Vec<f64> = recs.par_iter().map(|r| gc_pct(&r.seq)).collect();
     // a record without sequence gets no calls, and may share its name with one that has
     let idx: std::collections::HashMap<&str, usize> =
@@ -895,11 +891,20 @@ pub fn to_ultra_json(recs: &[Record], calls: &[Call], filler: &[UltraRecord], me
         .filter(|&(i, _)| kept[i])
         .map(|(i, c)| (c.seq, c.start, c.end, c.unit.clone(), period_of(c), None, false, c.parts.clone(), false, verdicts[i].2.as_ref()))
         .collect();
+    // The filler calls that remain. Pieces of one array are joined only now, so each
+    // piece has met the score cutoff and the FasTAN calls on its own.
+    let rest: Vec<&UltraRecord> = fl
+        .iter()
+        .enumerate()
+        .filter(|&(i, &(si, s, e, _))| !if prefer_filler { beaten[i] } else { covered(s, e, &ivs[si]) > 0.5 })
+        .map(|(_, x)| x.3)
+        .collect();
+    let joined: Vec<UltraRecord> = if filler_join { join_filler(recs, &rest) } else { Vec::new() };
+    let rest: Vec<&UltraRecord> = if filler_join { joined.iter().collect() } else { rest };
     let mut nfill = 0;
-    for (i, &(si, s, e, f)) in fl.iter().enumerate() {
-        if if prefer_filler { beaten[i] } else { covered(s, e, &ivs[si]) > 0.5 } {
-            continue;
-        }
+    for f in rest {
+        let si = idx[f.sequence_name.split_whitespace().next().unwrap_or("")];
+        let (s, e) = (f.start, (f.start + f.length).min(recs[si].seq.len()));
         let keep = keep_filler_deltas && f.position_score_deltas.len() == f.length && e == f.start + f.length;
         let revote = filler_cons.is_some_and(|o| f.period >= 1 && f.period <= o.max_cons_period);
         let fparts = f.sub_repeats.iter().filter(|x| x.start < e - s).map(|x| (x.start, x.consensus.as_bytes().to_vec())).collect();
@@ -988,7 +993,7 @@ pub struct Merge<'a> {
     /// `cons`), keeping the filler's units elsewhere; see `split_filler`. Not used for
     /// calls that `filler_cons` re-votes, which are split as they are re-voted.
     pub filler_split: Option<&'a Options>,
-    /// Join filler calls that are pieces of one array first; see [`join_filler`].
+    /// Join the remaining filler calls that are pieces of one array; see [`join_filler`].
     pub filler_join: bool,
 }
 
@@ -1095,7 +1100,7 @@ impl Hybrid {
     pub fn write_bpaf<W: std::io::Write>(&self, mut w: W) -> anyhow::Result<()> {
         use ultra_repeats::bpaf::{TandemRecord, TandemWriter};
         let seq_of: std::collections::HashMap<&str, &[u8]> =
-            self.seqs.iter().map(|r| (r.name.as_str(), r.seq.as_slice())).collect();
+            self.seqs.iter().filter(|r| !r.seq.is_empty()).map(|r| (r.name.as_str(), r.seq.as_slice())).collect();
         let mut bw = TandemWriter::new();
         bw.write_header(&mut w)?;
         // in batches, so the alignments held at once stay few

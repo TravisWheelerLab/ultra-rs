@@ -43,7 +43,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
     let mut settings = new_settings();
     settings.prepare_settings();
     if !settings.parse_input(argv) {
-        exit(0);
+        exit(ultra_repeats::cli::usage_error_code());
     }
 
     settings.assign_settings();
@@ -53,6 +53,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
     if settings.show_memory {
         exit(0);
     }
+    check_memory(&mut settings);
 
     // Tuning stuff.
     let mut coverage: Vec<u64> = Vec::new();
@@ -84,7 +85,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
             search_setting.prepare_settings();
             search_setting.set_multi_option();
             if !search_setting.parse_multi_input(argv, arg_string) {
-                exit(0);
+                exit(ultra_repeats::cli::usage_error_code());
             }
             search_setting.assign_settings();
             // The search runs write nothing, so they must not open (and so
@@ -162,7 +163,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
             settings.prepare_settings();
             settings.set_multi_option();
             if !settings.parse_multi_input(argv, &param_strings[best]) {
-                exit(0);
+                exit(ultra_repeats::cli::usage_error_code());
             }
             settings.assign_settings();
         } else {
@@ -188,7 +189,8 @@ fn main_wrapper(argv: &[String]) -> i32 {
     }
     if !settings.disable_summary {
         seq_length = reader_total_seq_length(&ultra);
-        let coverage_ratio = true_coverage as f64 / seq_length as f64;
+        // an empty input: 0, where the C++ prints -nan
+        let coverage_ratio = if seq_length == 0 && !settings.upstream_compat { 0.0 } else { true_coverage as f64 / seq_length as f64 };
         say!("----------------------------");
         say!(
             "Annotation Coverage: {} ({} / {})",
@@ -256,6 +258,34 @@ fn write_mask(settings: &Settings, ultra: &mut Ultra) {
         let _ = io::stdout().flush();
         eprintln!("Unable to write mask file {}: {}", settings.mask_file, e);
         std::process::exit(255);
+    }
+}
+
+/// Physical memory in bytes, where the system says (Linux `/proc/meminfo`).
+fn physical_memory() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb = text.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()?;
+    kb.checked_mul(1024)
+}
+
+/// Stop with a message when the settings need more memory than the machine has (e.g.
+/// a very large `--period` or `--overlap`); the allocation would abort the process.
+fn check_memory(settings: &mut Settings) {
+    let need = settings.memory_usage_bytes();
+    let have = physical_memory();
+    // the estimate can run to about twice what is used, so only refuse well past it
+    if need.is_none() || matches!((need, have), (Some(n), Some(h)) if n / 2 > h) {
+        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+        let _ = io::stdout().flush();
+        match (need, have) {
+            (Some(n), Some(h)) => eprintln!(
+                "These settings need about {:.1} GB of memory and this machine has {:.1} GB; lower --period, --win_size, --overlap, --windows or --threads",
+                n as f64 / GB,
+                h as f64 / GB
+            ),
+            _ => eprintln!("These settings need more memory than can be addressed; lower --period, --win_size, --overlap or --windows"),
+        }
+        std::process::exit(ultra_repeats::cli::usage_error_code());
     }
 }
 

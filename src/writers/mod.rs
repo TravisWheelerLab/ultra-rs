@@ -202,7 +202,24 @@ pub fn fmt_g(v: f64) -> String {
     }
 }
 
-/// The TSV/BED writers' name cleanup: the sequence name up to (not
+/// The first word of a FASTA header line: the sequence's id. Whitespace between `>`
+/// and the word is skipped.
+pub fn sequence_id(name: &str) -> &str {
+    name.split(|c: char| c.is_whitespace() || c == '\0').find(|w| !w.is_empty()).unwrap_or("")
+}
+
+/// The name the TSV and BED writers print: the sequence's id ([`sequence_id`]), as in
+/// BPAF. In compat mode, upstream's cleanup ([`clean_sequence_name`]), which cuts
+/// `gi|111|ref|A` to `gi`.
+pub(crate) fn table_sequence_name<'a>(settings: &crate::cli::Settings, name: &'a str) -> &'a str {
+    if settings.upstream_compat {
+        clean_sequence_name(name)
+    } else {
+        sequence_id(name)
+    }
+}
+
+/// Upstream's name cleanup for TSV/BED: the sequence name up to (not
 /// including) the first byte outside `[A-Za-z0-9-_.:*#]`.
 pub(crate) fn clean_sequence_name(name: &str) -> &str {
     let b = name.as_bytes();

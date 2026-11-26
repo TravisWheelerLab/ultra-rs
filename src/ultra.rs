@@ -234,6 +234,78 @@ fn open_output(path: &str, what: &str) -> File {
     }
 }
 
+/// Where `path` points once links and `..` are followed, for a file that may not exist
+/// yet (then its directory is resolved).
+fn resolved(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    match (std::fs::canonicalize(dir), p.file_name()) {
+        (Ok(d), Some(f)) => d.join(f),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// The files a run with settings `s` writes: (path, what it is).
+fn output_paths(s: &Settings) -> Vec<(String, &'static str)> {
+    let mut v = Vec::new();
+    if !s.out_file.is_empty() {
+        let kinds = [(s.ultra_out, "tsv"), (s.json_out, "json"), (s.bed_out, "bed"), (s.bpaf_out, "bpaf")];
+        if kinds.iter().filter(|k| k.0).count() > 1 {
+            v.extend(kinds.iter().filter(|k| k.0).map(|k| (format!("{}.{}", s.out_file, k.1), "output file")));
+        } else {
+            v.push((s.out_file.clone(), "output file"));
+        }
+        if !s.hide_settings {
+            v.push((format!("{}.settings", s.out_file), "settings output file"));
+        }
+    }
+    if !s.mask_file.is_empty() {
+        v.push((s.mask_file.clone(), "mask file"));
+    }
+    v
+}
+
+/// Before any output is created (which empties an existing file): the input must open,
+/// and no output may be the input or another output. Exits with status 255 otherwise.
+fn check_paths(s: &Settings) {
+    let fail = |msg: String| -> ! {
+        let _ = io::stdout().flush();
+        eprintln!("{}", msg);
+        std::process::exit(255)
+    };
+    let outs: Vec<(std::path::PathBuf, String, &str)> =
+        output_paths(s).into_iter().map(|(p, what)| (resolved(&p), p, what)).collect();
+    if !s.run_without_reader {
+        // a pipe is not opened here: that would take from what the reader is to read
+        let ok = match std::fs::metadata(&s.in_file) {
+            Ok(m) if m.is_file() => File::open(&s.in_file).is_ok(),
+            other => other.is_ok(),
+        };
+        if !ok {
+            fail(format!("Unable to open file: {}", s.in_file));
+        }
+        // these read the input again from the start, which a pipe cannot give
+        let again = [(!s.mask_file.is_empty(), "--mask"), (s.estimate_fdr, "--fdr"), (s.tune, "--tune")];
+        if let Some(opt) = again.iter().find(|a| a.0) {
+            if !std::fs::metadata(&s.in_file).is_ok_and(|m| m.is_file()) {
+                fail(format!("{} reads the input more than once and needs a regular file: {}", opt.1, s.in_file));
+            }
+        }
+        let input = resolved(&s.in_file);
+        if let Some(o) = outs.iter().find(|o| o.0 == input) {
+            fail(format!("The {} {} is the input file", o.2, o.1));
+        }
+    }
+    for (i, a) in outs.iter().enumerate() {
+        if let Some(b) = outs[..i].iter().find(|b| b.0 == a.0) {
+            fail(format!("The {} and the {} are the same file: {}", b.2, a.2, a.1));
+        }
+    }
+}
+
 impl Ultra {
     /// C++ `Ultra(Settings *)`. Opens the output files (and the `.settings`
     /// file), creates the writers, the input reader (unless
@@ -241,6 +313,7 @@ impl Ultra {
     /// if a file cannot be opened.
     pub fn new(s: &Settings) -> Ultra {
         let settings = s.clone();
+        check_paths(&settings);
         let mut writers: Vec<Box<dyn RepeatFileWriter>> = Vec::new();
         let mut outs: Vec<OutSink> = Vec::new();
         let mut settings_out: Option<BufWriter<File>> = None;

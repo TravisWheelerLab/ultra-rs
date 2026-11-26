@@ -325,6 +325,16 @@ impl Default for Settings {
     }
 }
 
+/// Exit status for a rejected command line or tune file: 2. The C++ exits with 0, and
+/// so does this port when `ULTRA_UPSTREAM_COMPAT` is set.
+pub fn usage_error_code() -> i32 {
+    if std::env::var_os("ULTRA_UPSTREAM_COMPAT").is_some_and(|v| !v.is_empty() && v != "0") {
+        0
+    } else {
+        2
+    }
+}
+
 /// Why `try_parse_input` stopped before returning a pass/fail verdict. Each
 /// variant is a place where the C++ either calls `exit` or lets a CLI11
 /// exception escape to `main`.
@@ -1007,6 +1017,12 @@ fn parse_args(settings: &mut Settings, argv: &[String]) -> Result<(), CliExit> {
         let def = &defs[idx];
         match def.kind {
             Kind::Help | Kind::Flag | Kind::FlagF32 => {
+                // `--pval_loc 3`: upstream takes a number only as `--pval_loc=3`.
+                if def.kind == Kind::FlagF32 && value.is_empty() && !settings.upstream_compat && i < args.len() && args[i].parse::<f32>().is_ok() {
+                    results[idx].push(args[i].clone());
+                    i += 1;
+                    continue;
+                }
                 // get_flag_value: an empty value means "true".
                 results[idx].push(if value.is_empty() {
                     "true".to_string()
@@ -1020,9 +1036,16 @@ fn parse_args(settings: &mut Settings, argv: &[String]) -> Result<(), CliExit> {
                     results[idx].push(value.to_string());
                     collected += 1;
                 }
-                // The minimum (one value) is taken from the next argument whatever it looks like.
+                // The minimum (one value) is taken from the next argument; upstream takes it
+                // whatever it looks like (`-o --json` wrote a file named `--json`), here
+                // another option is not a value.
+                let is_option = |a: &str| match classify(a) {
+                    Cls::Long(name, _) => find(true, name).is_some(),
+                    Cls::Short(name, _) => std::str::from_utf8(&[name]).ok().and_then(|n| find(false, n)).is_some(),
+                    _ => false,
+                };
                 if collected < 1 {
-                    if i < args.len() {
+                    if i < args.len() && (settings.upstream_compat || !is_option(&args[i])) {
                         results[idx].push(args[i].clone());
                         i += 1;
                     } else {
@@ -1150,9 +1173,9 @@ impl Settings {
 
     /// Parse arguments (`argv[0]` is the program name) and validate them.
     /// Returns false (after writing a message to stderr) when validation fails.
-    /// Like the C++, it exits the process for `--help`, `--cite`, unknown
-    /// arguments (code 0) and CLI11 exceptions (code 255, printed the way
-    /// `main` does).
+    /// Like the C++, it exits the process for `--help`, `--cite` (code 0), unknown
+    /// arguments ([`usage_error_code`]) and CLI11 exceptions (code 255, printed the
+    /// way `main` does).
     pub fn parse_input(&mut self, argv: &[String]) -> bool {
         let mut err = String::new();
         let r = self.try_parse_input(argv, &mut err);
@@ -1166,7 +1189,7 @@ impl Settings {
             }
             Err(CliExit::Extras(msg)) => {
                 eprintln!("Unrecognized flag or argument: {}", msg);
-                std::process::exit(0)
+                std::process::exit(usage_error_code())
             }
             Err(CliExit::Cite) => {
                 crate::writers::print_stdout(CITE_TEXT);
@@ -1248,7 +1271,11 @@ impl Settings {
         }
 
         if self.mask_file.is_empty() && self.mask_with_n {
-            fail("--maskn requires an output file path provided to --mask\n");
+            fail(if self.upstream_compat {
+                "--maskn requires an output file path provided to --mask\n"
+            } else {
+                "--nmask requires an output file path provided to --mask\n"
+            });
         }
 
         if self.threads < 1 {
@@ -1257,7 +1284,7 @@ impl Settings {
 
         // long long vs unsigned long long: the signed side converts to unsigned.
         if self.window_size != -1 && (self.window_size as u64) < self.max_period {
-            fail("--winsize cannot be smaller than --period\n");
+            fail(if self.upstream_compat { "--winsize cannot be smaller than --period\n" } else { "--win_size cannot be smaller than --period\n" });
         }
 
         if self.windows < self.threads as i64 {
@@ -1279,6 +1306,17 @@ impl Settings {
 
         if self.max_period < 1 {
             fail("--period must be at least 1\n");
+        }
+        // Larger values overflowed size arithmetic or were narrowed to a 32-bit int.
+        if self.max_period > i32::MAX as u64 {
+            fail("--period must be at most 2147483647\n");
+        }
+        if self.split_depth > i32::MAX as u64 {
+            fail("--split_depth must be at most 2147483647\n");
+        }
+        // An overlap longer than the window lowered the scores of joined repeats.
+        if self.window_size > 0 && self.overlap > self.window_size {
+            fail("--overlap cannot be larger than --win_size\n");
         }
 
         // The model takes these as 32-bit ints; larger values used to wrap
@@ -1350,8 +1388,9 @@ impl Settings {
         if !frac_ok(self.period_decay, false) {
             fail("--decay must be > 0.0 and <= 1.0\n");
         }
-        if !frac_ok(self.transition_nr, true) {
-            fail("--nr must be >= 0.0 and <= 1.0\n");
+        // at 1 a window is all repeat and has no start to trace back to
+        if !frac_ok(self.transition_nr, true) || self.transition_nr >= 1.0 {
+            fail("--nr must be >= 0.0 and < 1.0\n");
         }
         if !frac_ok(self.transition_rn, true) {
             fail("--rn must be >= 0.0 and <= 1.0\n");
@@ -1370,7 +1409,7 @@ impl Settings {
         }
 
         if self.split_threshold <= 0.0 {
-            fail("--splitval must be > 0.0\n");
+            fail(if self.upstream_compat { "--splitval must be > 0.0\n" } else { "--split_threshold must be > 0.0\n" });
         }
 
         if self.tune_fdr < 0.0 || self.tune_fdr > 1.0 {
@@ -1393,7 +1432,11 @@ impl Settings {
         }
 
         if !self.tune_param_path.is_empty() && (self.tune_medium || self.tune_large) {
-            fail("Cannot use both --tune_file and (--tune_small or --tune_large).\n");
+            fail(if self.upstream_compat {
+                "Cannot use both --tune_file and (--tune_small or --tune_large).\n"
+            } else {
+                "Cannot use both --tune_file and (--tune_medium or --tune_large).\n"
+            });
         }
 
         let mut c = 0;
@@ -1577,6 +1620,21 @@ impl Settings {
         s
     }
 
+    /// The "Total size" of [`memory_usage_string`](Self::memory_usage_string) in bytes,
+    /// or `None` when it does not fit in 64 bits.
+    pub fn memory_usage_bytes(&mut self) -> Option<u64> {
+        let num_states = self.calculate_num_states() as u64;
+        let total_window = u64::try_from(self.window_size.checked_add(self.overlap.checked_mul(2)?)?).ok()?;
+        let mut cells = self.max_period.checked_add(1)?.checked_mul(total_window)?.checked_mul(2)?.checked_add(num_states.checked_mul(2)?)?;
+        if crate::umodel::uses_blocked_kernel(self.max_insert as usize, self.max_delete as usize) {
+            cells = cells.checked_add(crate::umodel::POSITION_EMISSION_ARRAYS.checked_mul(total_window)?)?;
+        }
+        cells
+            .checked_mul(u64::try_from(self.threads).ok()?)?
+            .checked_mul(4)?
+            .checked_add(total_window.checked_mul(u64::try_from(self.windows).ok()?)?)
+    }
+
     /// Writes [`memory_usage_string`](Self::memory_usage_string) to stdout.
     pub fn print_memory_usage(&mut self) -> std::io::Result<()> {
         std::io::stdout().lock().write_all(self.memory_usage_string().as_bytes())
@@ -1733,7 +1791,7 @@ pub fn tune_settings_for_path(path: &str) -> Vec<String> {
         }
         Err(_) => {
             eprintln!("Failed to open settings file: {}", path);
-            std::process::exit(0);
+            std::process::exit(usage_error_code());
         }
     }
 
@@ -1745,12 +1803,17 @@ pub fn tune_settings_for_path(path: &str) -> Vec<String> {
     for (i, line) in lines.iter().enumerate() {
         let line_num = i + 1; // we 1 index line numbers
         if !line.is_empty() {
-            let argv = string_to_args(line);
+            // The line is checked as it will be used: appended to a command line. (The
+            // C++ parses the line alone, so its first word is taken for the program
+            // name and never checked.)
+            let mut argv = vec!["ultra".to_string(), "in.fa".to_string()];
+            argv.extend(string_to_args(line));
             let mut test_settings = Settings::new();
             test_settings.prepare_settings();
+            test_settings.set_multi_option();
             if !test_settings.parse_input(&argv) {
                 eprintln!("Invalid arguments on line {} in tune file. \"{}\"", line_num, line);
-                std::process::exit(0);
+                std::process::exit(usage_error_code());
             }
             settings.push(line.to_string());
         }
@@ -4136,7 +4199,11 @@ Total size: 2.76 GB (2959135872 bytes)
             "Exc",
             r####"--out: 1 required TEXT missing"####,
         ),
-        (&["./ultra", "ex.fa", "--mem", "-o", "--json"], "Ok", r####""####),
+        (
+            &["./ultra", "ex.fa", "--mem", "-o", "--json"],
+            "Exc",
+            r####"--out: 1 required TEXT missing"####,
+        ),
         (
             &["./ultra", "ex.fa", "--mem", "-p"],
             "Exc",
@@ -4192,11 +4259,7 @@ Total size: 2.76 GB (2959135872 bytes)
 "####,
         ),
         (&["./ultra", "ex.fa", "--mem", "--score=-3"], "Ok", r####""####),
-        (
-            &["./ultra", "ex.fa", "--mem", "--pval_loc", "3.0"],
-            "Exc",
-            r####"Could not convert: --pval_loc = true"####,
-        ),
+        (&["./ultra", "ex.fa", "--mem", "--pval_loc", "3.0"], "Ok", r####""####),
         (
             &["./ultra", "ex.fa", "--mem", "--pval_loc"],
             "Exc",
@@ -4398,7 +4461,7 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--nmask"],
             "Fail",
-            r####"--maskn requires an output file path provided to --mask
+            r####"--nmask requires an output file path provided to --mask
 "####,
         ),
         (
@@ -4409,7 +4472,7 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--win_size", "5", "-p", "10"],
             "Fail",
-            r####"--winsize cannot be smaller than --period
+            r####"--win_size cannot be smaller than --period
 "####,
         ),
         // The C++ accepts this and then misbehaves; the port rejects it.
@@ -4457,7 +4520,7 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--nr", "-0.5"],
             "Fail",
-            r####"--nr must be >= 0.0 and <= 1.0
+            r####"--nr must be >= 0.0 and < 1.0
 "####,
         ),
         (
@@ -4493,13 +4556,13 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--split_threshold", "0"],
             "Fail",
-            r####"--splitval must be > 0.0
+            r####"--split_threshold must be > 0.0
 "####,
         ),
         (
             &["./ultra", "ex.fa", "--mem", "--splitval", "-1"],
             "Fail",
-            r####"--splitval must be > 0.0
+            r####"--split_threshold must be > 0.0
 "####,
         ),
         (
@@ -4528,13 +4591,13 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--tune_medium", "--tune_file", "x"],
             "Fail",
-            r####"Cannot use both --tune_file and (--tune_small or --tune_large).
+            r####"Cannot use both --tune_file and (--tune_medium or --tune_large).
 "####,
         ),
         (
             &["./ultra", "ex.fa", "--mem", "--tune_large", "--tune_file", "x"],
             "Fail",
-            r####"Cannot use both --tune_file and (--tune_small or --tune_large).
+            r####"Cannot use both --tune_file and (--tune_medium or --tune_large).
 "####,
         ),
         (&["./ultra", "ex.fa", "--mem", "--tune_file", "x"], "Ok", r####""####),

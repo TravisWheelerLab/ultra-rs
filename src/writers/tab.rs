@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use super::{c_str, clean_sequence_name, fmt_g, to_string_f32, RepeatFileWriter};
+use super::{c_str, table_sequence_name, fmt_g, to_string_f32, RepeatFileWriter};
 use crate::cli::Settings;
 use crate::repeat::RepeatRegion;
 
@@ -58,7 +58,7 @@ impl RepeatFileWriter for TabFileWriter {
         repeat: &RepeatRegion,
         out: &mut dyn Write,
     ) -> io::Result<()> {
-        let name = clean_sequence_name(&repeat.sequence_name);
+        let name = table_sequence_name(settings, &repeat.sequence_name);
 
         // Columns 1 (name) 2 (start) 3 (end) 4 (period) 5 (score)
         write!(

@@ -143,7 +143,14 @@ impl RepeatFileWriter for JSONFileWriter {
             let pval = pval_for_score(settings, repeat.region_score);
             // %g as in the TSV: the C++ prints %f, so every p-value below
             // 5e-7 (the best-scoring repeats) came out as 0.000000.
-            let text = if settings.upstream_compat { to_string_f64(pval) } else { super::fmt_g(pval) };
+            // JSON has no inf or nan (odd --pval_loc/--pval_scale values give them)
+            let text = if settings.upstream_compat {
+                to_string_f64(pval)
+            } else if pval.is_finite() {
+                super::fmt_g(pval)
+            } else {
+                "null".to_string()
+            };
             kv(out, "PVal", text)?;
         }
 

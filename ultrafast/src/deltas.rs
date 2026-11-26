@@ -39,9 +39,11 @@ fn align_window_path(s: &[u8], u: &[u8], cm: i32, ci: i32, out: &mut Vec<Op>) {
 /// Alignment path of `array` to the cyclic `unit` (both ASCII), minimising
 /// cm per substitution + ci per inserted base or skipped column; pick cm:ci to
 /// match the scoring model (`ULTRA_COSTS`, `TE_COSTS`) so the path is the one
-/// that model would prefer. Long arrays are aligned in windows (each with a
-/// free starting phase), as in `consensus.rs`. Every array base appears
-/// exactly once, as `M` or `I`.
+/// that model would prefer. Every array base appears exactly once, as `M` or `I`,
+/// and the columns of successive `M`/`D` steps are consecutive around the unit.
+///
+/// Long arrays are aligned in overlapping windows, each with a free starting
+/// phase, and stitched at a base both windows put in the same column (`stitch`).
 pub fn path(array: &[u8], unit: &[u8], max_cells: usize, (cm, ci): (i32, i32)) -> Vec<Op> {
     let s: Vec<u8> = array.iter().map(|&c| code(c)).collect();
     let u: Vec<u8> = unit.iter().map(|&c| code(c)).filter(|&c| c < 4).collect();
@@ -60,21 +62,97 @@ pub fn path(array: &[u8], unit: &[u8], max_cells: usize, (cm, ci): (i32, i32)) -
         align_window_path(&s, &u, cm, ci, &mut out);
         return out;
     }
-    // windows are independent: align them in parallel and concatenate in order
+    // each window runs `ov` bases into the next one; a last piece no longer than
+    // that is covered by the window before it
+    let ov = l.max(64).min(w / 4);
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut b = 0;
+    while spans.last().is_none_or(|&(_, e)| e < s.len()) {
+        spans.push((b, (b + w + ov).min(s.len())));
+        b += w;
+    }
+    // windows are independent: align them in parallel, then stitch in order
     use rayon::prelude::*;
-    let parts: Vec<Vec<Op>> = s
-        .par_chunks(w)
+    let parts: Vec<Vec<Op>> = spans
+        .par_iter()
         .with_max_len(1)
-        .map(|c| {
-            let mut o = Vec::with_capacity(c.len() + c.len() / 8);
-            align_window_path(c, &u, cm, ci, &mut o);
+        .map(|&(b, e)| {
+            let mut o = Vec::with_capacity(e - b + (e - b) / 8);
+            align_window_path(&s[b..e], &u, cm, ci, &mut o);
             o
         })
         .collect();
-    for p in parts {
-        out.extend(p);
+    let mut end = 0;
+    for (p, &(b, e)) in parts.iter().zip(&spans) {
+        if b == 0 {
+            out.extend_from_slice(p);
+        } else {
+            stitch(&mut out, p, end - b, l);
+        }
+        end = e;
     }
     out
+}
+
+/// Append window `next` to `out`, whose last `ov` bases are also the first `ov`
+/// bases of `next`. The cut goes after the overlap base nearest the middle that both
+/// put in the same column, so the path stays one alignment. If they agree nowhere, cut
+/// in the middle and pay for the phase change: skip columns, or turn the last aligned
+/// bases before the cut into insertions, whichever moves fewer columns.
+fn stitch(out: &mut Vec<Op>, next: &[Op], ov: usize, l: usize) {
+    let is_base = |o: &Op| !matches!(o, Op::D(_));
+    // op index of each overlap base, in `out` and in `next`
+    let mut ia = Vec::with_capacity(ov);
+    let mut i = out.len();
+    while ia.len() < ov {
+        i -= 1;
+        if is_base(&out[i]) {
+            ia.push(i);
+        }
+    }
+    ia.reverse();
+    let ib: Vec<usize> = next.iter().enumerate().filter(|(_, o)| is_base(o)).map(|(i, _)| i).take(ov).collect();
+    let mid = ov / 2;
+    let agree = (0..ov)
+        .filter(|&k| matches!(out[ia[k]], Op::M(_)) && out[ia[k]] == next[ib[k]])
+        .min_by_key(|&k| k.abs_diff(mid));
+    if let Some(k) = agree {
+        out.truncate(ia[k] + 1);
+        out.extend_from_slice(&next[ib[k] + 1..]);
+        return;
+    }
+    let tail = if mid < ov { &next[ib[mid]..] } else { &next[next.len()..] };
+    if mid < ov {
+        out.truncate(ia[mid]);
+    }
+    let col = |o: &Op| match o {
+        Op::M(c) | Op::D(c) => Some(*c as usize),
+        Op::I => None,
+    };
+    if let (Some(prev), Some(to)) = (out.iter().rev().find_map(col), tail.iter().find_map(col)) {
+        let from = (prev + 1) % l;
+        let fwd = (to + l - from) % l;
+        if fwd <= l / 2 {
+            out.extend((0..fwd).map(|d| Op::D(((from + d) % l) as u32)));
+        } else {
+            // step back l - fwd columns: aligned bases become insertions, skipped
+            // columns are no longer skipped
+            let (mut back, mut ins) = (l - fwd, 0);
+            while back > 0 {
+                match out.pop() {
+                    Some(Op::M(_)) => {
+                        back -= 1;
+                        ins += 1;
+                    }
+                    Some(Op::D(_)) => back -= 1,
+                    Some(Op::I) => ins += 1,
+                    None => break,
+                }
+            }
+            out.extend(std::iter::repeat_n(Op::I, ins));
+        }
+    }
+    out.extend_from_slice(tail);
 }
 
 // ---------------------------------------------------------------- ULTRA model
@@ -315,6 +393,64 @@ mod tests {
         for max_cells in [1_000, 30_000, 1 << 28] {
             let ops = path(&arr, &unit, max_cells, ULTRA_COSTS);
             assert_eq!(ops.iter().filter(|o| !matches!(o, Op::D(_))).count(), arr.len(), "max_cells {max_cells}");
+        }
+    }
+
+    /// Columns of successive M/D steps are consecutive around the unit.
+    fn continuous(ops: &[Op], l: usize) -> bool {
+        let mut exp: Option<u32> = None;
+        ops.iter().all(|o| match o {
+            Op::M(c) | Op::D(c) => {
+                let ok = exp.map_or(true, |e| e == *c);
+                exp = Some((*c + 1) % l as u32);
+                ok
+            }
+            Op::I => true,
+        })
+    }
+
+    #[test]
+    fn windowed_path_is_one_alignment() {
+        // a period-20 array over several windows, with a base deleted or inserted at
+        // each offset around the first window seam (max_cells 4000 -> windows of 200)
+        let unit = b"ACGTTGCAAGCTTAGGCATC";
+        let arr: Vec<u8> = unit.iter().cycle().take(1000).copied().collect();
+        let whole = path(&arr, unit, usize::MAX, ULTRA_COSTS);
+        assert_eq!(whole.iter().filter(|o| matches!(o, Op::M(_))).count(), 1000);
+        for at in 190..=260 {
+            for del in [true, false] {
+                let mut a = arr.clone();
+                if del {
+                    a.remove(at);
+                } else {
+                    a.insert(at, if arr[at] == b'A' { b'C' } else { b'A' });
+                }
+                let ops = path(&a, unit, 4000, ULTRA_COSTS);
+                assert_eq!(ops.iter().filter(|o| !matches!(o, Op::D(_))).count(), a.len(), "at {at}");
+                assert!(continuous(&ops, unit.len()), "at {at} del {del}");
+                // one indel, nothing else
+                let (i, d) = (ops.iter().filter(|o| **o == Op::I).count(), ops.iter().filter(|o| matches!(o, Op::D(_))).count());
+                assert_eq!((i, d), if del { (0, 1) } else { (1, 0) }, "at {at} del {del}");
+                let want = ultra_deltas(&a, unit.len(), &path(&a, unit, usize::MAX, ULTRA_COSTS)).iter().sum::<f64>();
+                let got = ultra_deltas(&a, unit.len(), &ops).iter().sum::<f64>();
+                assert!((want - got).abs() < 1e-6, "at {at} del {del}: {got} vs {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn stitch_pays_for_a_phase_change() {
+        // no base agrees in the overlap: forward by 2 columns, then back by 2
+        let l = 10;
+        let a: Vec<Op> = (0..20).map(|i| Op::M(i % 10)).collect();
+        for shift in [2u32, 8] {
+            let next: Vec<Op> = (0..20).map(|i| Op::M((i + 6 + shift) % 10)).collect();
+            let mut out = a.clone();
+            stitch(&mut out, &next, 4, l);
+            assert!(continuous(&out, l), "shift {shift}: {out:?}");
+            assert_eq!(out.iter().filter(|o| !matches!(o, Op::D(_))).count(), 36);
+            let (i, d) = (out.iter().filter(|o| **o == Op::I).count(), out.iter().filter(|o| matches!(o, Op::D(_))).count());
+            assert_eq!((i, d), if shift == 2 { (0, 2) } else { (2, 0) });
         }
     }
 

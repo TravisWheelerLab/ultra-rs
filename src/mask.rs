@@ -87,9 +87,9 @@ pub fn output_masked_fasta<W: Write>(
 ) -> io::Result<()> {
     let file = match File::open(in_path) {
         Ok(f) => f,
-        Err(_) => {
+        Err(e) => {
             eprintln!("Unable to open {in_path}");
-            return Ok(());
+            return Err(e);
         }
     };
     let mut in_file = BufReader::new(file);
@@ -105,11 +105,11 @@ pub fn output_masked_fasta<W: Write>(
     let mut cmask: Vec<MRegion> = masks.get_mut(&0).and_then(|regions| cleaned_masks(regions)).unwrap_or_default();
 
     loop {
-        // `std::getline`: split on '\n' only; a read error ends the loop
-        // like end of file.
+        // `std::getline`: split on '\n' only
         line.clear();
         match in_file.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            Err(e) => return Err(e),
             Ok(_) => {}
         }
         if line.last() == Some(&b'\n') {
@@ -262,10 +262,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_input_writes_nothing() {
+    fn missing_input_is_an_error_and_writes_nothing() {
         let mut map = HashMap::new();
         let mut out = Vec::new();
-        output_masked_fasta("/nonexistent/ultra/input.fa", &mut out, &mut map, false).unwrap();
+        assert!(output_masked_fasta("/nonexistent/ultra/input.fa", &mut out, &mut map, false).is_err());
         assert!(out.is_empty());
     }
 }

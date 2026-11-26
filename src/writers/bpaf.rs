@@ -17,6 +17,10 @@ pub const ULTRA_SCORING: &str = "ultra";
 #[derive(Default)]
 pub struct BPAFFileWriter {
     writer: TandemWriter,
+    /// Sequence id -> the record it was first seen on, to warn when two records share
+    /// an id (their calls then share one query in the file).
+    seen: std::collections::HashMap<String, u64>,
+    warned: std::collections::HashSet<String>,
 }
 
 impl BPAFFileWriter {
@@ -25,12 +29,7 @@ impl BPAFFileWriter {
     }
 }
 
-/// The first word of a FASTA header line: the sequence's id.
-pub fn sequence_id(name: &str) -> &str {
-    name.split(|c: char| c.is_whitespace() || c == '\0')
-        .next()
-        .unwrap_or("")
-}
+pub use super::sequence_id;
 
 impl RepeatFileWriter for BPAFFileWriter {
     fn initialize_writer(&mut self, _settings: &Settings, out: &mut dyn Write) -> io::Result<()> {
@@ -47,6 +46,10 @@ impl RepeatFileWriter for BPAFFileWriter {
             return Ok(());
         };
         let query = sequence_id(&repeat.sequence_name);
+        let first = *self.seen.entry(query.to_string()).or_insert(repeat.sequence_id);
+        if first != repeat.sequence_id && self.warned.insert(query.to_string()) {
+            eprintln!("Warning: more than one sequence is named {query:?}; their repeats share one query in the BPAF file");
+        }
         for part in &parts {
             self.writer.write_record(
                 out,

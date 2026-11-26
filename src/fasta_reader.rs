@@ -66,8 +66,8 @@ pub struct FASTAReader {
 
 /// `std::getline(file, line, '\n')`: returns false only when nothing could be
 /// extracted. The delimiter is dropped; everything else (including `\r`) is
-/// kept. A read error is treated like end of file, as the stream would go bad
-/// and fail.
+/// kept. A read error ends the run with status 255 (the C++ treats it like end of
+/// file and reports what it had read).
 fn getline(file: &mut Option<BufReader<File>>, line: &mut Vec<u8>) -> bool {
     line.clear();
     let f = match file.as_mut() {
@@ -75,7 +75,12 @@ fn getline(file: &mut Option<BufReader<File>>, line: &mut Vec<u8>) -> bool {
         None => return false,
     };
     match f.read_until(b'\n', line) {
-        Ok(0) | Err(_) => false,
+        Ok(0) => false,
+        Err(e) => {
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            eprintln!("Error reading the input file: {}", e);
+            std::process::exit(255);
+        }
         Ok(_) => {
             if line.last() == Some(&b'\n') {
                 line.pop();
@@ -381,7 +386,14 @@ impl FASTAReader {
         reader.create_windows(mx_windows, mx_seq_length, mx_overlap_length);
 
         match File::open(file_path) {
-            Ok(f) => reader.file = Some(BufReader::new(f)),
+            Ok(f) => {
+                let mut f = BufReader::new(f);
+                if std::io::BufRead::fill_buf(&mut f).is_ok_and(|b| b.starts_with(&[0x1f, 0x8b])) {
+                    eprintln!("The input file is gzip-compressed; decompress it first: {}", file_path);
+                    std::process::exit(255);
+                }
+                reader.file = Some(f)
+            }
             Err(_) => {
                 eprint!("Unable to open file: {}\n", file_path);
                 std::process::exit(-1);
