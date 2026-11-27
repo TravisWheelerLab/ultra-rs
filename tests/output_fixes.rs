@@ -115,6 +115,23 @@ fn ultra_stdout(args: &[&str], input: &Path) -> String {
 /// depended on how the sort happened to arrange them. That differed between
 /// a run that writes repeats as it goes and one that writes them all at the
 /// end. The test compares four run orders.
+/// `-r` was refused as needing too much memory: the estimate multiplied by
+/// its window count, which has no limit. The repeats are those of a streamed
+/// run; only the memory estimate printed above them differs.
+#[test]
+fn read_all_finds_the_same_repeats_as_streaming() {
+    fn repeats(args: &[&str]) -> String {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/example_1.fa");
+        let out = ultra_stdout(args, &input);
+        let (_, rows) = out.split_once("============================\n").expect("no memory estimate");
+        rows.to_string()
+    }
+    let streamed = repeats(&["-t", "1", "--hs"]);
+    assert!(streamed.lines().count() > 2, "no repeats in:\n{streamed}");
+    assert_eq!(repeats(&["-t", "1", "--hs", "-r"]), streamed);
+    assert_eq!(repeats(&["-t", "1", "--hs", "--read_all", "--win_size", "2000"]), repeats(&["-t", "1", "--hs", "--win_size", "2000"]));
+}
+
 #[test]
 fn output_does_not_depend_on_when_repeats_are_written() {
     let d = dir("run_order");

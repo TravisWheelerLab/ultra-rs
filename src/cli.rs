@@ -1621,7 +1621,9 @@ impl Settings {
     }
 
     /// The "Total size" of [`memory_usage_string`](Self::memory_usage_string) in bytes,
-    /// or `None` when it does not fit in 64 bits.
+    /// or `None` when it does not fit in 64 bits. With `read_all` the whole input is
+    /// held in memory and its size is not known here, so the estimate leaves the
+    /// queue of sequence windows out.
     pub fn memory_usage_bytes(&mut self) -> Option<u64> {
         let num_states = self.calculate_num_states() as u64;
         let total_window = u64::try_from(self.window_size.checked_add(self.overlap.checked_mul(2)?)?).ok()?;
@@ -1629,10 +1631,11 @@ impl Settings {
         if crate::umodel::uses_blocked_kernel(self.max_insert as usize, self.max_delete as usize) {
             cells = cells.checked_add(crate::umodel::POSITION_EMISSION_ARRAYS.checked_mul(total_window)?)?;
         }
-        cells
-            .checked_mul(u64::try_from(self.threads).ok()?)?
-            .checked_mul(4)?
-            .checked_add(total_window.checked_mul(u64::try_from(self.windows).ok()?)?)
+        let matrices = cells.checked_mul(u64::try_from(self.threads).ok()?)?.checked_mul(4)?;
+        if self.read_all {
+            return Some(matrices);
+        }
+        matrices.checked_add(total_window.checked_mul(u64::try_from(self.windows).ok()?)?)
     }
 
     /// Writes [`memory_usage_string`](Self::memory_usage_string) to stdout.
@@ -1982,6 +1985,22 @@ mod tests {
         assert_eq!(s.try_parse_input(&argv(&["./ultra", "-r", "--win_size", "2000", "x.fa"]), &mut err), Ok(true));
         s.assign_settings();
         assert_eq!(s.windows, -1);
+    }
+
+    /// -r has no window count to multiply by; the estimate is the DP matrices alone.
+    #[test]
+    fn memory_estimate_with_read_all_leaves_out_the_window_queue() {
+        let mut err = String::new();
+        let mut streamed = Settings::new();
+        assert_eq!(streamed.try_parse_input(&argv(&["./ultra", "x.fa"]), &mut err), Ok(true));
+        streamed.assign_settings();
+        let queue = (streamed.window_size + 2 * streamed.overlap) as u64 * streamed.windows as u64;
+        let with_queue = streamed.memory_usage_bytes().unwrap();
+
+        let mut whole = Settings::new();
+        assert_eq!(whole.try_parse_input(&argv(&["./ultra", "-r", "x.fa"]), &mut err), Ok(true));
+        whole.assign_settings();
+        assert_eq!(whole.memory_usage_bytes(), Some(with_queue - queue));
     }
 
     /// -i / -d above i32::MAX are rejected instead of wrapping.
