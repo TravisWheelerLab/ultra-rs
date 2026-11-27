@@ -37,6 +37,14 @@ impl JSONFileWriter {
 
     /// C++ `StringForSubRepeat`. The unused `frac_rep`/`subScore` are dropped.
     pub fn string_for_sub_repeat(r: &RepeatRegion, split_index: i32, start_pos: i32) -> Vec<u8> {
+        Self::string_for_sub_repeat_hiding(r, split_index, start_pos, None)
+    }
+
+    /// [`string_for_sub_repeat`](Self::string_for_sub_repeat), with the
+    /// consensus hidden as `--max_consensus` hides it when `hide` is
+    /// `Some(max_consensus_period)`: "." for a period above it, no consensus
+    /// below 0.
+    fn string_for_sub_repeat_hiding(r: &RepeatRegion, split_index: i32, start_pos: i32, hide: Option<i32>) -> Vec<u8> {
         let splits = r.splits.as_ref().expect("splits is null");
         let consensi = r.consensi.as_ref().expect("consensi is null");
         let mut s: Vec<u8> = b"{".to_vec();
@@ -49,15 +57,30 @@ impl JSONFileWriter {
 
         s.extend_from_slice(b"\"Start\": ");
         s.extend_from_slice(start.to_string().as_bytes());
-        s.extend_from_slice(b",\n\"Consensus\": \"");
-        // `+= consensi->at(i).c_str()`: stops at a NUL.
-        s.extend_from_slice(c_str(&consensi[consensus_position]));
-        s.extend_from_slice(b"\"}");
+        match hide {
+            None => {
+                s.extend_from_slice(b",\n\"Consensus\": \"");
+                // `+= consensi->at(i).c_str()`: stops at a NUL.
+                s.extend_from_slice(c_str(&consensi[consensus_position]));
+                s.extend_from_slice(b"\"");
+            }
+            Some(max) if max >= 0 => s.extend_from_slice(b",\n\"Consensus\": \".\""),
+            Some(_) => {}
+        }
+        s.push(b'}');
         s
     }
 
     /// C++ `SubRepeatsString`.
     pub fn sub_repeats_string(r: &RepeatRegion) -> Vec<u8> {
+        Self::sub_repeats_string_hiding(r, None)
+    }
+
+    /// [`sub_repeats_string`](Self::sub_repeats_string) with the consensi
+    /// hidden as in [`string_for_sub_repeat_hiding`].
+    ///
+    /// [`string_for_sub_repeat_hiding`]: Self::string_for_sub_repeat_hiding
+    fn sub_repeats_string_hiding(r: &RepeatRegion, hide: Option<i32>) -> Vec<u8> {
         let splits = r.splits.as_ref().expect("splits is null");
         let mut s: Vec<u8> = b"[".to_vec();
 
@@ -67,7 +90,7 @@ impl JSONFileWriter {
                 if start > 0 {
                     s.extend_from_slice(b",\n");
                 }
-                s.extend_from_slice(&Self::string_for_sub_repeat(r, i as i32, start));
+                s.extend_from_slice(&Self::string_for_sub_repeat_hiding(r, i as i32, start, hide));
                 start = split_i;
             }
         }
@@ -75,7 +98,7 @@ impl JSONFileWriter {
         if start > 0 {
             s.extend_from_slice(b",\n");
         }
-        s.extend_from_slice(&Self::string_for_sub_repeat(r, -1, start));
+        s.extend_from_slice(&Self::string_for_sub_repeat_hiding(r, -1, start, hide));
         s.push(b']');
         s
     }
@@ -118,7 +141,17 @@ impl RepeatFileWriter for JSONFileWriter {
         kv(out, "Score", to_string_f32(repeat.region_score))?;
         if settings.pval {
             let pval = pval_for_score(settings, repeat.region_score);
-            kv(out, "PVal", to_string_f64(pval))?;
+            // %g as in the TSV: the C++ prints %f, so every p-value below
+            // 5e-7 (the best-scoring repeats) came out as 0.000000.
+            // JSON has no inf or nan (odd --pval_loc/--pval_scale values give them)
+            let text = if settings.upstream_compat {
+                to_string_f64(pval)
+            } else if pval.is_finite() {
+                super::fmt_g(pval)
+            } else {
+                "null".to_string()
+            };
+            kv(out, "PVal", text)?;
         }
 
         if settings.show_counts {
@@ -134,7 +167,19 @@ impl RepeatFileWriter for JSONFileWriter {
             kv(out, "Deletions", repeat.deletions.to_string())?;
         }
 
-        Self::output_json_key_value(out, "Consensus", &repeat.string_consensus, true)?;
+        // --max_consensus applies to JSON as to TSV and BED (the C++ ignores
+        // it here): "." for a period above it, no consensus below 0.
+        let hide_consensus = !settings.upstream_compat && settings.max_consensus_period < repeat.repeat_period;
+        if !hide_consensus {
+            Self::output_json_key_value(out, "Consensus", &repeat.string_consensus, true)?;
+        } else if settings.max_consensus_period >= 0 {
+            Self::output_json_key_value(out, "Consensus", b".", true)?;
+        }
+
+        // --show_wid: the C++ accepts it and prints nothing.
+        if settings.show_wid && !settings.upstream_compat {
+            kv(out, "WindowID", repeat.read_id.to_string())?;
+        }
 
         if settings.show_seq {
             Self::output_json_key_value(out, "Sequence", &repeat.sequence, true)?;
@@ -181,7 +226,7 @@ impl RepeatFileWriter for JSONFileWriter {
         }
 
         if number_of_valid_splits > 0 {
-            let sub_repeats = Self::sub_repeats_string(repeat);
+            let sub_repeats = Self::sub_repeats_string_hiding(repeat, hide_consensus.then_some(settings.max_consensus_period));
             Self::output_json_key_value(out, "SubRepeats", &sub_repeats, false)?;
         }
         out.write_all(b"}")
@@ -222,6 +267,52 @@ mod tests {
             String::from_utf8(out).unwrap(),
             format!("{{\"Repeats\": [\n{one},\n\n{one}]\n}}")
         );
+    }
+
+    /// --show_wid prints the window (read) id; --max_consensus hides the
+    /// consensus as in TSV and BED: "." above it, nothing below 0. The C++
+    /// does neither.
+    #[test]
+    fn window_id_and_hidden_consensus() {
+        let mut r = region();
+        r.read_id = 7;
+        r.splits = Some(vec![2]);
+        r.consensi = Some(vec![b"CA".to_vec(), b"TA".to_vec()]);
+        let text = |s: &Settings| {
+            let mut out = Vec::new();
+            JSONFileWriter::new().write_repeat(s, &r, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let mut s = Settings::default();
+        s.json_out = true;
+        s.show_wid = true;
+        assert!(text(&s).contains("\"WindowID\": 7"), "{}", text(&s));
+        s.max_consensus_period = 1;
+        let t = text(&s);
+        assert!(t.contains("\"Consensus\": \".\",") && !t.contains("\"CA\"") && !t.contains("\"TA\""), "{t}");
+        s.max_consensus_period = -1;
+        assert!(!text(&s).contains("\"Consensus\""), "{}", text(&s));
+        s.upstream_compat = true;
+        let t = text(&s);
+        assert!(t.contains("\"Consensus\": \"CA\"") && !t.contains("WindowID"), "{t}");
+    }
+
+    /// Small p-values keep their digits (%g, as in the TSV); the C++ prints
+    /// %f, which turns them into 0.000000.
+    #[test]
+    fn pval_is_printed_with_g() {
+        let mut s = Settings::default();
+        s.pval = true;
+        let mut r = region();
+        r.region_score = 42.2;
+        let text = |s: &Settings| {
+            let mut out = Vec::new();
+            JSONFileWriter::new().write_repeat(s, &r, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert!(text(&s).contains("\"PVal\": 6.45705e-13,"), "{}", text(&s));
+        s.upstream_compat = true;
+        assert!(text(&s).contains("\"PVal\": 0.000000,"), "{}", text(&s));
     }
 
     #[test]
@@ -266,7 +357,9 @@ mod tests {
         let mut out = Vec::new();
         w.write_repeat(&s, &r, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains(",\n\"PVal\": 0.000060,"), "{text}");
+        let pval = crate::writers::fmt_g(pval_for_score(&s, r.region_score));
+        assert!(text.contains(&format!(",\n\"PVal\": {pval},")), "{text}");
+        assert_eq!(pval, "5.99591e-05");
         assert!(
             text.contains(",\n\"Copies\": 2,\n\"Substitutions\": 0"),
             "{text}"

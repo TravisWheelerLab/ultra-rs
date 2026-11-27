@@ -50,6 +50,10 @@ ultrafast -h
 ```
 The banner at the top of `ultra -h` gives the version. This port has its own version numbers, which start at 0.1.0 and are separate from those of the C++ ULTRA.
 
+`ultra` exits with status 0 on success, 2 when the command line or a tune file is rejected, and 255 when a file cannot be opened, read or written. The C++ ULTRA exits with 0 for a rejected command line. It refuses an output path that is the input file or another output, and `--mask`, `--fdr` and `--tune` need a regular file as input because they read it more than once.
+
+The `SeqID` column of TSV and BED output is the first word of the FASTA header. The C++ ULTRA cuts the name at the first character other than a letter, a digit or one of `-_.:*#`, so `gi|111|ref|A` becomes `gi`.
+
 If you built without installing, type `target/release/ultra` (or `target/release/ultrafast`) wherever the examples below say `ultra` (or `ultrafast`).
 
 ## Basic usage
@@ -181,12 +185,26 @@ Using `--show_seq` will include an additional `Sequence` column containing the c
   
 Using ULTRA with `--json` will result in JSON formatted output. The JSON output will contain an objects with a `Repeats` array. Each object in the `Repeats` array will contain descriptive fields such as "Start", "Length",  "Period", "Score",  "Substitutions" (the number of mismatches), "Insertions" (the number of insertions), "Deletions" (the number of deletions), "Consensus", and additional fields depending on the specific settings being used. 
 
-Repeats that contain subrepeats will have a "Subrepeats" array, each object in the array containing a "Start" field (that describes the subrepeat's starting location relative to the overall repeat), and a "Consensus" field.
+Repeats that contain subrepeats will have a "SubRepeats" array, each object in the array containing a "Start" field (that describes the subrepeat's starting location relative to the overall repeat), and a "Consensus" field.
 </details>
 <details>
 <summary>BED format</summary>
   
 Using ULTRA with `--bed`will result in a BED file with four columns (`Sequence ID`, `Start`, `End`,  `Consensus`).
+</details>
+<details>
+<summary>BPAF format (alignments)</summary>
+
+Using ULTRA with `--bpaf` writes each repeat aligned to its consensus, as a BPAF (Binary Pairwise Alignment Format, version 0) file. This is the only output with the alignment itself: where the repeat's bases fall on the consensus unit, including insertions and deletions. `--bpaf` needs `-o`, since the file is binary.
+
+- There is one record per repeat, or one per subrepeat when the repeat has them. The sequence is the query and the consensus unit is the target.
+- Each record has the `TARGET_CIRCULAR` flag: the target coordinates run along the unit repeated end to end. The target start is the unit column (1-based) that the repeat begins in, and the target length divided by the period is the copy number.
+- The units are stored in the file (the `EXT_SEQUENCES` extension), so a reader needs the input FASTA only to see the repeat's own bases. The sequences themselves are not stored.
+- A unit of up to 32 bases is named `(UNIT)n`, for example `(CA)n`. A longer one is named `TR<period>_<hash>`. The same unit has the same name in every file, and repeats with the same unit share one target.
+- The record's score is the repeat's score (every subrepeat of a repeat carries it), and the scoring system is named `ultra`.
+- The query id is the first word of the FASTA header; `ultra` warns when two sequences share one. A consensus column with no base (`*` in the other formats) is stored as `N`.
+
+The alignment is made when the repeat is written, with the scores the consensus is built with (match 2, mismatch -2, gap -5), so runs without `--bpaf` do no extra work.
 </details>
 <details>
 <summary>Multiformat output</summary>

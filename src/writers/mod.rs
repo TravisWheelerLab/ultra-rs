@@ -7,10 +7,12 @@
 //! p-value parameters) and the sink as arguments on every call.
 
 pub mod bed;
+pub mod bpaf;
 pub mod json;
 pub mod tab;
 
 pub use bed::BEDFileWriter;
+pub use bpaf::BPAFFileWriter;
 pub use json::JSONFileWriter;
 pub use tab::TabFileWriter;
 
@@ -152,6 +154,30 @@ fn strip_fraction_zeros(s: &mut String) {
     }
 }
 
+
+/// Ends the program after a failed write to an output, for a command-line
+/// program such as `ultra`. A closed pipe (`ultra ... | head`) ends it
+/// quietly with status 141, as SIGPIPE ends the C++; any other error (a full
+/// disk, say) is reported, with status 255. The C++ ignored write errors and
+/// the port discarded them, so a run carried on to the end and then panicked
+/// printing its summary. The library's own methods return write errors
+/// instead of calling this.
+pub fn on_write_error(e: &io::Error) -> ! {
+    if e.kind() == io::ErrorKind::BrokenPipe {
+        std::process::exit(141);
+    }
+    eprintln!("Error writing output: {e}");
+    std::process::exit(255);
+}
+
+/// Writes `text` to stdout, ending the program as [`on_write_error`] does if
+/// that fails. Used in place of `print!`, which panics on a closed pipe.
+pub fn print_stdout(text: &str) {
+    let mut out = io::stdout().lock();
+    if let Err(e) = out.write_all(text.as_bytes()) {
+        on_write_error(&e);
+    }
+}
 /// printf `%g` (glibc, precision 6).
 pub fn fmt_g(v: f64) -> String {
     const P: i32 = 6;
@@ -176,7 +202,24 @@ pub fn fmt_g(v: f64) -> String {
     }
 }
 
-/// The TSV/BED writers' name cleanup: the sequence name up to (not
+/// The first word of a FASTA header line: the sequence's id. Whitespace between `>`
+/// and the word is skipped.
+pub fn sequence_id(name: &str) -> &str {
+    name.split(|c: char| c.is_whitespace() || c == '\0').find(|w| !w.is_empty()).unwrap_or("")
+}
+
+/// The name the TSV and BED writers print: the sequence's id ([`sequence_id`]), as in
+/// BPAF. In compat mode, upstream's cleanup ([`clean_sequence_name`]), which cuts
+/// `gi|111|ref|A` to `gi`.
+pub(crate) fn table_sequence_name<'a>(settings: &crate::cli::Settings, name: &'a str) -> &'a str {
+    if settings.upstream_compat {
+        clean_sequence_name(name)
+    } else {
+        sequence_id(name)
+    }
+}
+
+/// Upstream's name cleanup for TSV/BED: the sequence name up to (not
 /// including) the first byte outside `[A-Za-z0-9-_.:*#]`.
 pub(crate) fn clean_sequence_name(name: &str) -> &str {
     let b = name.as_bytes();

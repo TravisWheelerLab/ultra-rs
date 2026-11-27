@@ -1022,24 +1022,41 @@ pub fn tandem_arrays(text: &[u8], starts: &[usize]) -> Vec<TandemArray> {
     let tot = fq.iter().sum::<u64>().max(1) as f32;
     let spec = Spec::new(AVE_CORR, [fq[0] as f32 / tot, fq[1] as f32 / tot, fq[2] as f32 / tot, fq[3] as f32 / tot]);
     // Long contigs (e.g. gap-free T2T chromosomes) are scanned as overlapping windows so they use
-    // all threads; calls cut by a window edge are merged afterwards (merge_windows).
+    // all threads. Calls of one array from two windows are merged afterwards when their periods
+    // are within 25%, and a call a window made of the cut end of an array another window saw
+    // more of is dropped (merge_windows_cut). Other calls can still differ from a whole-contig
+    // scan: on P. falciparum about 0.6% did, most of them away from the window edges.
     // tasks: (seq, start, end, window id); window ids are unique across the whole input
     // ULTRAFAST_WINDOW overrides the window length (0 = scan each contig whole, as C FasTAN
     // does); for testing
-    let window = std::env::var("ULTRAFAST_WINDOW").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(WINDOW);
+    // The scan's diagonal arithmetic is in 32-bit ints, so no scan may be
+    // longer than MAX_SCAN: larger windows are refused, and with 0 a longer
+    // contig is still cut into windows of the default length.
+    let window = match std::env::var("ULTRAFAST_WINDOW") {
+        Err(_) => WINDOW,
+        Ok(v) => match v.parse::<usize>() {
+            Ok(w) if w.checked_add(WINDOW_OVERLAP).is_some_and(|x| x <= MAX_SCAN) => w,
+            _ => {
+                eprintln!("ultrafast: ignoring ULTRAFAST_WINDOW={v} (want 0 to {}), using {WINDOW}", MAX_SCAN - WINDOW_OVERLAP);
+                WINDOW
+            }
+        },
+    };
     let mut tasks: Vec<(usize, usize, usize, usize)> = Vec::new();
     for &(k, s, e) in &contigs {
-        if window == 0 || e - s <= window + WINDOW_OVERLAP {
+        let whole = if window == 0 { e - s <= MAX_SCAN } else { e - s <= window + WINDOW_OVERLAP };
+        if whole {
             tasks.push((k, s, e, tasks.len()));
         } else {
+            let step = if window == 0 { WINDOW } else { window };
             let mut ws = s;
             loop {
-                let we = (ws + window + WINDOW_OVERLAP).min(e);
+                let we = (ws + step + WINDOW_OVERLAP).min(e);
                 tasks.push((k, ws, we, tasks.len()));
                 if we == e {
                     break;
                 }
-                ws += window;
+                ws += step;
             }
         }
     }
@@ -1070,52 +1087,91 @@ pub fn tandem_arrays(text: &[u8], starts: &[usize]) -> Vec<TandemArray> {
         .flatten()
         .collect();
     all.sort_unstable_by_key(|(t, w)| (t.seq, t.bbeg, t.aend, *w));
-    merge_windows(all)
+    let wins: Vec<(usize, usize)> = tasks.iter().map(|&(k, s, e, _)| (s - starts[k], e - starts[k])).collect();
+    merge_windows_cut(all, &wins)
 }
 
 /// Window length and overlap for scanning long contigs in parallel.
 pub const WINDOW: usize = 2_000_000;
 pub const WINDOW_OVERLAP: usize = 100_000;
+/// The longest stretch one scan may cover: its coordinates are 32-bit ints
+/// (doubled for anti-diagonals).
+pub const MAX_SCAN: usize = 1 << 29;
 
 /// Merge calls of the same array found in different (overlapping) windows: two calls from
 /// different windows that overlap and have similar periods (within 25%) become one call
-/// spanning both. Calls from the same window are never merged, so nested arrays FasTAN
-/// reports in one window are kept as they are. Input sorted by (seq, bbeg).
-fn merge_windows(all: Vec<(TandemArray, usize)>) -> Vec<TandemArray> {
+/// spanning both. Two calls that both come only from one window are never merged, so
+/// arrays FasTAN reports in one window are kept as they are (it masks each array it finds,
+/// so those do not overlap anyway). A call is merged into every earlier call it may join,
+/// and into one already merged from its own window and another: windows that cut an
+/// array crossing their seam into different numbers of pieces used to leave the extra
+/// piece in the output, overlapping the merged call. Input sorted by (seq, bbeg).
+///
+/// `wins[w]` is the stretch of its sequence that window `w` scanned. A call from one
+/// window that lies inside a call another window made, where that call runs past the
+/// first window's edge, is dropped: the window saw only the cut end of the array (under
+/// two units of it, say) and reported a shorter period there. With no `wins`, nothing is
+/// dropped.
+fn merge_windows_cut(all: Vec<(TandemArray, usize)>, wins: &[(usize, usize)]) -> Vec<TandemArray> {
     let mut out: Vec<(TandemArray, Vec<usize>)> = Vec::with_capacity(all.len());
-    for (a, w) in all {
-        let mut merged = false;
-        for (b, ws) in out.iter_mut().rev().take(64) {
-            if b.seq != a.seq {
-                break;
-            }
-            if b.aend <= a.bbeg || ws.contains(&w) {
-                continue;
-            }
-            let (p, q) = (a.period.max(1) as f64, b.period.max(1) as f64);
-            if p / q > 1.25 || q / p > 1.25 {
-                continue;
-            }
-            let (la, lb) = ((a.aend - a.bbeg) as f64, (b.aend - b.bbeg) as f64);
-            let rate = (a.diffs as f64 + b.diffs as f64) / (la + lb).max(1.0);
-            let longer = if la > lb { a } else { *b };
-            b.bbeg = b.bbeg.min(a.bbeg);
-            b.aend = b.aend.max(a.aend);
-            b.abeg = b.abeg.min(a.abeg);
-            b.bend = b.bend.max(a.bend);
-            b.period = longer.period;
-            b.diffs = (rate * (b.aend - b.bbeg) as f64).round() as usize;
-            ws.push(w);
-            merged = true;
-            break;
+    let joins = |a: &TandemArray, aw: &[usize], b: &TandemArray, bw: &[usize]| -> bool {
+        if b.seq != a.seq || b.aend <= a.bbeg || a.aend <= b.bbeg {
+            return false;
         }
-        if !merged {
+        // both from one and the same window only
+        if aw.iter().chain(bw).all(|&x| x == aw[0]) {
+            return false;
+        }
+        let (p, q) = (a.period.max(1) as f64, b.period.max(1) as f64);
+        p / q <= 1.25 && q / p <= 1.25
+    };
+    let absorb = |b: &mut TandemArray, a: &TandemArray| {
+        let (la, lb) = ((a.aend - a.bbeg) as f64, (b.aend - b.bbeg) as f64);
+        let rate = (a.diffs as f64 + b.diffs as f64) / (la + lb).max(1.0);
+        let longer = if la > lb { *a } else { *b };
+        b.bbeg = b.bbeg.min(a.bbeg);
+        b.aend = b.aend.max(a.aend);
+        b.abeg = b.abeg.min(a.abeg);
+        b.bend = b.bend.max(a.bend);
+        b.period = longer.period;
+        b.diffs = (rate * (b.aend - b.bbeg) as f64).round() as usize;
+    };
+    for (a, w) in all {
+        let lo = out.len().saturating_sub(64);
+        let hits: Vec<usize> = (lo..out.len()).filter(|&i| joins(&a, &[w], &out[i].0, &out[i].1)).collect();
+        let Some(&first) = hits.first() else {
             out.push((a, vec![w]));
+            continue;
+        };
+        absorb(&mut out[first].0, &a);
+        out[first].1.push(w);
+        // The other entries a joins are pieces of the same array: fold them
+        // in too (from the back, so the indices stay valid).
+        for &i in hits[1..].iter().rev() {
+            let (b, bw) = out.remove(i);
+            absorb(&mut out[first].0, &b);
+            out[first].1.extend(bw);
         }
     }
-    let mut v: Vec<TandemArray> = out.into_iter().map(|(t, _)| t).collect();
+    out.sort_by_key(|(t, _)| (t.seq, t.bbeg, std::cmp::Reverse(t.aend)));
+    // containers sort first: look back as far as the merging does
+    let cut: Vec<bool> = (0..out.len())
+        .map(|i| {
+            let (b, bw) = &out[i];
+            let Some(&(ws, we)) = (bw.len() == 1).then(|| wins.get(bw[0])).flatten() else { return false };
+            out[i.saturating_sub(64)..i].iter().any(|(a, aw)| {
+                a.seq == b.seq && a.aend >= b.aend && !aw.contains(&bw[0]) && (a.bbeg < ws || a.aend > we)
+            })
+        })
+        .collect();
+    let mut v: Vec<TandemArray> = out.into_iter().zip(cut).filter(|(_, c)| !c).map(|((t, _), _)| t).collect();
     v.sort_unstable_by_key(|t| (t.seq, t.bbeg, t.aend));
     v
+}
+
+#[cfg(test)]
+fn merge_windows(all: Vec<(TandemArray, usize)>) -> Vec<TandemArray> {
+    merge_windows_cut(all, &[])
 }
 
 #[cfg(test)]
@@ -1184,6 +1240,44 @@ mod tests {
         assert_eq!((v[0].bbeg, v[0].aend), (1_990_000, 2_171_000));
         assert_eq!(v[0].period, 172, "the longer piece's period (171 kb vs 110 kb)");
         assert_eq!(v[0].diffs, (181_000.0f64 * (5_500.0 + 8_550.0) / 281_000.0).round() as usize);
+    }
+
+    /// Windows that cut an array crossing their seam into different numbers
+    /// of pieces: window 0 gives two pieces, window 1 one. Every piece joins
+    /// the one merged call; the second piece from window 0 used to stay in
+    /// the output, overlapping it.
+    #[test]
+    fn merge_windows_absorbs_every_seam_piece() {
+        let v = merge_windows(vec![
+            (ta(0, 1_900_000, 2_050_000, 171), 0),
+            (ta(0, 2_000_000, 2_300_000, 171), 1),
+            (ta(0, 2_050_000, 2_100_000, 171), 0),
+        ]);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!((v[0].bbeg, v[0].aend), (1_900_000, 2_300_000));
+        // A call joining two separate entries folds both into one.
+        let v = merge_windows(vec![
+            (ta(0, 100, 1_000, 50), 0),
+            (ta(0, 2_000, 3_000, 50), 2),
+            (ta(0, 900, 2_100, 50), 1),
+        ]);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!((v[0].bbeg, v[0].aend), (100, 3_000));
+    }
+
+    #[test]
+    fn merge_windows_drops_a_call_made_of_a_cut_array_end() {
+        let wins = [(0, 2_100_000), (2_000_000, 4_100_000)];
+        // window 1 sees the last 5.5 kb of a period-9008 array and calls period 1504 there
+        let long = ta(0, 1_957_297, 2_005_501, 9008);
+        let v = merge_windows_cut(vec![(long, 0), (ta(0, 2_002_502, 2_005_462, 1504), 1)], &wins);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].period, 9008);
+        // kept: a call inside one that its own window saw whole, and one not inside
+        let v = merge_windows_cut(vec![(ta(0, 2_010_000, 2_090_000, 9008), 0), (ta(0, 2_020_000, 2_030_000, 1504), 1)], &wins);
+        assert_eq!(v.len(), 2, "{v:?}");
+        let v = merge_windows_cut(vec![(long, 0), (ta(0, 2_002_502, 2_015_462, 1504), 1)], &wins);
+        assert_eq!(v.len(), 2, "{v:?}");
     }
 
     #[test]

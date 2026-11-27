@@ -35,10 +35,8 @@ fn main() {
     settings.window_size = 1000000; // window size should be equal to the largest sequence you will analyze
     settings.overlap = 0; // overlap should be turned off
 
-    // We can also pass in an argument string to settings. As in the C++
-    // example, the first token is taken as the program name, so "-p" is
-    // swallowed, "25" becomes the input file name and only "-i 3 -d 3" apply.
-    // The first word stands in for the program name.
+    // We can also pass in an argument string to settings. The first word stands in
+    // for the program name.
     let argv = string_to_args("ultra -p 25 -i 3 -d 3");
     settings.prepare_settings(); // This should be called before running parse_input()
     if !settings.parse_input(&argv) {

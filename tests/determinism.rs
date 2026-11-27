@@ -70,6 +70,7 @@ fn run(dir: &Path, input: &Path, threads: u32, extra: &str) -> Vec<(String, Vec<
             "--json",
             "--bed",
             "--tsv",
+            "--bpaf",
             "-o",
             "out",
             "--mask",

@@ -131,7 +131,8 @@ fn substituted(state: &mut u64, s: &[u8], pct: u64) -> Vec<u8> {
 fn microsatellite_inside_part_of_a_satellite_is_kept() {
     // a period-40 satellite with substitutions that holds 300 bp of (AGAT)n: FasTAN calls
     // the whole span at period 40 and scores badly on the AGAT bases, so ULTRA's AGAT call
-    // must stay
+    // must stay. (-p 20: at the default -p 50 ULTRA calls the satellite itself, as one
+    // call on each side of the AGAT run, which is checked below.)
     let d = dir("micro_in_sat");
     let mut st = 5u64;
     let unit = bases(&mut st, 40);
@@ -146,15 +147,20 @@ fn microsatellite_inside_part_of_a_satellite_is_kept() {
     s.extend(bases(&mut st, 2000));
     let fa = d.join("in.fa");
     write_fa(&fa, &[("x", s)], "\n");
-    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    let spans: Vec<_> = records(&["-t", "2", "-p", "20"], &fa).iter().map(span).collect();
     assert!(spans.iter().any(|&(s, e, p)| p == 4 && s <= 4005 && e >= 4290), "{spans:?}");
     assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 2100 && e >= 5200), "{spans:?}");
+    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    assert!(spans.iter().any(|&(s, e, p)| p == 4 && s <= 4005 && e >= 4290), "{spans:?}");
+    assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 2100 && e >= 3990), "{spans:?}");
+    assert!(spans.iter().any(|&(s, e, p)| p == 40 && s <= 4310 && e >= 5200), "{spans:?}");
 }
 
 #[test]
 fn divergent_array_is_not_reported_at_twice_its_period() {
     // 32 copies of a 12 bp unit with 15% substitutions (simulated). FasTAN calls it at
-    // period 24, which scores a fraction of a bit below ULTRA's period-12 call; ULTRA's stays
+    // period 24, which scores a fraction of a bit below ULTRA's period-12 call; ULTRA's stays.
+    // (-p 20, so that ULTRA cannot report period 24 itself: at higher -p it does.)
     let d = dir("divergent");
     let s = b"TGGGGCTTATATTTGCAGGGAGCGGCTTTTCCATTCACTCGAATCTGATAATCGGGGACACGCGTAGACGATGCTAGTGGCTCCGTGCTAC\
 CCCCCAGGTTAAACTGTACCATAAACGGTACAATATACTATACCATAAACTGTACCATAAGCTGTACCATAGTCTGTACCATAAACTGTATCACATACTG\
@@ -165,7 +171,7 @@ CCGCCTGGGACTAAATTCACTGCAGACCCCTAGGGGGCACTGATTAGAAATGATTATGGCCGCAGACCTAACAAAAATGC
         .to_vec();
     let fa = d.join("in.fa");
     write_fa(&fa, &[("d", s)], "\n");
-    let spans: Vec<_> = records(&["-t", "2"], &fa).iter().map(span).collect();
+    let spans: Vec<_> = records(&["-t", "2", "-p", "20"], &fa).iter().map(span).collect();
     assert!(spans.iter().any(|&(s, e, p)| p == 12 && s <= 110 && e >= 470), "{spans:?}");
     assert!(!spans.iter().any(|&(_, _, p)| p == 24), "{spans:?}");
     // FasTAN alone does call it at period 24
@@ -319,4 +325,147 @@ fn output_to_a_device_and_option_checks() {
     assert!(run(&["-o", o.to_str().unwrap()], &fa).status.success());
     let left: Vec<_> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(left.len(), 2, "{left:?}");
+}
+
+/// Gaps, '*' and ';' comment lines are not sequence (as ULTRA counts it), so
+/// FasTAN's and ULTRA's coordinates agree and an array is reported once.
+#[test]
+fn non_sequence_bytes_do_not_shift_coordinates() {
+    let d = dir("non_sequence_bytes");
+    let mut st = 0x5eed_0001u64;
+    let mut seq = bases(&mut st, 200);
+    seq.extend(b"CA".repeat(40));
+    seq.extend(bases(&mut st, 200));
+    let mut text = b">s1\n".to_vec();
+    text.extend(b"-".repeat(50));
+    // A comment long enough that counting it as sequence would shift FasTAN
+    // off ULTRA's call.
+    text.extend(b"\n;");
+    text.extend(b"comment".repeat(12));
+    text.extend(b"\n");
+    text.extend(&seq);
+    text.extend(b"\n");
+    let fa = d.join("gaps.fa");
+    fs::write(&fa, &text).unwrap();
+    let clean = d.join("clean.fa");
+    write_fa(&clean, &[("s1", seq)], "\n");
+    let got: Vec<_> = records(&["-t", "1"], &fa).iter().map(span).collect();
+    let want: Vec<_> = records(&["-t", "1"], &clean).iter().map(span).collect();
+    assert_eq!(got, want);
+    assert_eq!(got.len(), 1, "{got:?}");
+}
+
+/// Sequence before the first header is a record named "", as a header with
+/// nothing after '>' is. Two such records holding sequence are refused with
+/// a message naming them; a record without sequence may share a name, and
+/// ULTRA's calls go to the record that has the sequence.
+#[test]
+fn empty_and_shared_names() {
+    let d = dir("empty_names");
+    let mut st = 0x5eed_0005u64;
+    let mut seq = bases(&mut st, 1000);
+    seq.extend(b"CAG".repeat(40));
+    seq.extend(bases(&mut st, 1000));
+    let other = bases(&mut st, 500);
+    let fa = |name: &str, parts: &[&[u8]]| {
+        let p = d.join(name);
+        fs::write(&p, parts.concat()).unwrap();
+        p
+    };
+    for f in [
+        fa("before_and_bare.fa", &[&other, b"\n>\n", &seq, b"\n"]),
+        fa("two_bare.fa", &[b">\n", &other, b"\n> \n", &seq, b"\n"]),
+    ] {
+        let out = run(&["-t", "1"], &f);
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("\"\" occurs more than once (records 1 and 2)") && err.contains("empty name"), "{err}");
+    }
+    // no sequence after the bare header, or in the first or the last "seq1"
+    for f in [
+        fa("before_then_empty.fa", &[&seq, b"\n>\n"]),
+        fa("empty_first.fa", &[b">seq1\n>seq1 x\n", &seq, b"\n"]),
+        fa("empty_last.fa", &[b">seq1\n", &seq, b"\n>seq1 x\n"]),
+    ] {
+        let r = records(&["-t", "1"], &f);
+        let cag: Vec<_> = r.iter().filter(|x| span(x).2 == 3).collect();
+        assert_eq!(cag.len(), 1, "{f:?}: {r:?}");
+        let (s, e, _) = span(cag[0]);
+        assert!(s <= 1010 && e >= 1110, "{f:?}: {r:?}");
+    }
+}
+
+/// --revote-filler keeps the period when the middle copy of an ULTRA call is
+/// partly N (it seeded the vote with a shorter copy before).
+#[test]
+fn revote_seed_skips_n() {
+    let d = dir("revote_n");
+    let mut st = 0x5eed_0002u64;
+    let unit = b"AGGTCCATGTTAGC";
+    let mut seq = bases(&mut st, 100);
+    for _ in 0..6 {
+        seq.extend_from_slice(unit);
+    }
+    seq.extend_from_slice(&unit[..3]);
+    seq.extend(b"N".repeat(7));
+    seq.extend_from_slice(&unit[10..]);
+    for _ in 0..6 {
+        seq.extend_from_slice(unit);
+    }
+    seq.extend(bases(&mut st, 100));
+    let fa = d.join("nmid.fa");
+    write_fa(&fa, &[("n1", seq)], "\n");
+    let recs = records(&["-t", "1", "--revote-filler"], &fa);
+    let r = recs.iter().find(|r| r["Length"].as_u64().unwrap() > 100).expect("the array");
+    assert_eq!(r["Period"], 14, "{r}");
+    let c = r["Consensus"].as_str().unwrap();
+    assert!(format!("{0}{0}", unit.iter().map(|&b| b as char).collect::<String>()).contains(c), "{c}");
+}
+
+/// Input ULTRA cannot read a second time (a pipe) is refused rather than
+/// giving ULTRA an empty file.
+#[test]
+fn pipe_input_is_refused() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+        .args(["-t", "1", "/dev/stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(b">s\nACGTACGT\n");
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a pipe"), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A header that is not UTF-8 is accepted; a file name starting with '-'
+/// reaches ULTRA.
+#[test]
+fn latin1_headers_and_dash_file_names() {
+    let d = dir("latin1_dash");
+    let mut st = 0x5eed_0003u64;
+    let mut seq = bases(&mut st, 200);
+    seq.extend(b"CA".repeat(40));
+    seq.extend(bases(&mut st, 200));
+    let mut text = b">s1 caf\xe9\n".to_vec();
+    text.extend(&seq);
+    text.extend(b"\n");
+    let fa = d.join("latin1.fa");
+    fs::write(&fa, &text).unwrap();
+    let recs = records(&["-t", "1"], &fa);
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0]["SequenceName"], "s1");
+
+    fs::write(d.join("-x.fa"), &text).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+        .current_dir(&d)
+        .args(["-t", "1", "--", "-x.fa"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let j: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["Repeats"].as_array().unwrap().len(), 1);
 }

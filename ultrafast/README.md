@@ -5,11 +5,12 @@ A hybrid tandem-repeat annotator built on this repository's ULTRA library. It wr
 - **FasTAN** (a Rust port of Gene Myers' tandem-array finder, `src/fastan.rs`) finds arrays of any period
   (up to about 30 kb) quickly. Each array gets a TRF-style iterative consensus unit (`src/consensus.rs`)
   and is split where the unit changes.
-- **ULTRA** runs in-process at a short maximum period (`-p`, default 20), alongside FasTAN.
+- **ULTRA** runs in-process at a short maximum period (`-p`, default 50), alongside FasTAN.
   At short periods its sensitivity matters most and its cost is lowest.
 - The two call sets are merged (see [Merging](#merging)).
 
-ULTRA calls keep ULTRA's own units, `Score` and `PositionScoreDeltas`. FasTAN calls are scored per base on
+ULTRA calls keep ULTRA's own units, `Score` and `PositionScoreDeltas`, except calls joined from several
+pieces (see [Merging](#merging)), which are scored again over their whole span. FasTAN calls are scored per base on
 the same scale (`--delta-model ultra`, bits), so the output works anywhere ULTRA's
 `--json --show_delta` output does, e.g. as RepeatMasker Aurora's `-U` input.
 
@@ -23,11 +24,12 @@ cargo install --path ultrafast         # or install it
 
 ## Usage
 ```
-ultrafast -t 16 -o genome.json genome.fa                 # hybrid, ULTRA at periods <= 20
+ultrafast -t 16 -o genome.json genome.fa                 # hybrid, ULTRA at periods <= 50
 ultrafast -t 16 genome.fa > genome.json                  # the same, JSON on stdout
 ultrafast -p 0 genome.fa > fastan_only.json              # FasTAN only (stdin allowed: '-')
 ultrafast --tsv arrays.tsv -o genome.json genome.fa      # also FasTAN's arrays as TSV
-ultrafast --filler ultra_p20.json -o genome.json genome.fa   # use a separate ULTRA run's calls
+ultrafast --bpaf genome.bpaf -o genome.json genome.fa    # also each call aligned to its unit (BPAF)
+ultrafast --filler ultra_p50.json -o genome.json genome.fa   # use a separate ULTRA run's calls
 ```
 `-t N` is the total thread count (default: all cores), split between ULTRA and FasTAN, which run at the
 same time; `-t 1` runs them one after the other. `ultrafast -h` lists every option. The main groups are:
@@ -36,6 +38,7 @@ same time; `-t 1` runs them one after the other. `ultrafast -h` lists every opti
   column scores (nats; experimental). `--delta-scale` multiplies every delta and `Score`.
 - **Merging:**
   - `--filler-min-score` sets a score cutoff for ULTRA calls.
+  - `--no-join` keeps ULTRA calls that are pieces of one array as separate calls.
   - `--revote-filler` re-votes ULTRA's units with the TRF-style caller.
   - `--rescore-filler` recomputes ULTRA's deltas.
   - `--rescore-only` puts a `--filler` file on the `te` scale without running FasTAN.
@@ -50,7 +53,10 @@ Output is `{"Repeats": [...]}` with ULTRA's fields: `SequenceName`, `Start` (0-b
   the FASTA itself, so stdin works only with `-p 0` or `--filler`. Input must be uncompressed, as for
   `ultra`.
 - Any byte other than A/C/G/T (an N, or an IUPAC code such as R) ends a stretch of sequence for FasTAN,
-  so a FasTAN array is reported in two parts on either side of one, as FasTAN does.
+  so a FasTAN array is reported in two parts on either side of one. C FasTAN reads an IUPAC code as
+  `A` and keeps going. Each stretch is scanned from its own start, so calls after such a byte can also
+  differ slightly from C FasTAN's (on *T. brucei*, with 11 IUPAC bases, about 165 calls had a period
+  one base longer or shorter).
 
 ### Merging
 - A FasTAN call with a period up to `-p` is dropped when ULTRA calls cover more than half of it.
@@ -62,12 +68,17 @@ Output is `{"Repeats": [...]}` with ULTRA's fields: `SequenceName`, `Start` (0-b
   reports a divergent array at two or three times its period. Otherwise the first rule applies.
 - A FasTAN call kept this way replaces each ULTRA call that it covers more than half of and outscores on
   the bases the two share. Other ULTRA calls inside it are reported as well. So a 21-23 bp unit, which
-  ULTRA at `-p 20` calls at period 20 with an indel in every copy, is reported at its own period. A
+  ULTRA at `-p 20` would call at period 20 with an indel in every copy, is reported at its own period. A
   satellite whose copies each hold a short microsatellite is reported as the satellite, along with any
   microsatellite call that it does not outscore. A long microsatellite that interrupts a satellite is
   reported in addition to the satellite.
 - A FasTAN call that is a fragment of one larger ULTRA call (the ULTRA call covers more than half of it,
   and it covers no more than half of the ULTRA call) is never kept this way.
+- The ULTRA calls that remain are then joined where they are pieces of one array: two calls of the same
+  period whose units differ in at most a tenth of their positions, the second starting no more than two
+  units after the first ends, when reading the gap as part of the array costs little. The joined call
+  has the longer piece's unit, lists the pieces' units as `SubRepeats` where they differ, and is scored
+  again. `--no-join` turns this off.
 - Calls can still overlap. `--prefer-fastan` keeps every FasTAN call and drops ULTRA calls covered
   more than half by FasTAN calls. With `--filler`, the cap is the longest period in the file.
 
@@ -81,7 +92,17 @@ windows shorter than three units.
 - `ULTRA_UPSTREAM_COMPAT`: as for `ultra`, anything but empty or `0` runs ULTRA with the C++-compatible
   scoring.
 - `ULTRAFAST_WINDOW` (FasTAN's scan window in bp, default 2,000,000; 0 = each stretch whole, as C FasTAN)
-  and `ULTRAFAST_SPLIT_DEBUG` (prints split decisions to stderr) are for testing.
+  and `ULTRAFAST_SPLIT_DEBUG` (prints split decisions to stderr) are for testing. So are
+  `ULTRAFAST_JOIN_DEBUG` (prints each join candidate and its cost) and `ULTRAFAST_JOIN_COST` (the highest
+  cost at which two calls are joined).
+
+### Alignments (`--bpaf`)
+`--bpaf FILE` also writes every call aligned to its consensus unit, as a BPAF (version 0) file in the layout
+`ultra --bpaf` uses (see the main README): one record per call, or per `SubRepeats` entry, with the sequence
+as the query, the unit as the target, and the `TARGET_CIRCULAR` flag. The units are stored in the file. Each
+record carries the call's `Score`; the scoring system is `ultra`, or the matrix name for calls scored with
+`--delta-model te`. The alignments are made after the calls, on `-t` threads (about 15 s more on a run of
+52 s for a 24 Mb simulated genome at 8 threads).
 
 ## As a library
 The crate is also a library: the command is a thin wrapper around `ultrafast::hybrid`. It isn't on crates.io,
@@ -91,12 +112,13 @@ so depend on it through git or a path:
 ultrafast = { git = "https://github.com/TravisWheelerLab/ultra-rs", branch = "main" }
 ```
 ```rust
-let opt = ultrafast::HybridOptions { ultra_period: 20, threads: 8, ..Default::default() };
+let opt = ultrafast::HybridOptions { ultra_period: 50, threads: 8, ..Default::default() };
 let h = ultrafast::hybrid("genome.fa", &opt)?;
 for r in &h.repeats {   // ULTRA's JSON records, sorted by sequence and start
     println!("{}\t{}\t{}\t{}\t{}", r.sequence_name, r.start, r.start + r.length, r.period, r.consensus);
 }
 h.write_json(std::io::stdout())?;   // the same JSON the command writes
+h.write_bpaf(std::fs::File::create("genome.bpaf")?)?;   // the alignments, as --bpaf writes them
 ```
 `HybridOptions::default()` matches the command's defaults; its fields correspond to the command-line
 options. `Hybrid` also holds the sequences read (`seqs`) and every FasTAN array before merging (`arrays`).

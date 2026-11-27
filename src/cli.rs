@@ -60,12 +60,13 @@ Output:
   -o,--out TEXT               Output file path
   --disable_streaming_out     Disables streaming output; no output will be created until all analysis has been completed
   -c,--show_counts            Output #copies, #substitutions, #insertions, #deletions
-  --pval                      Use p-values instead of scores in BED output
+  --pval                      Add p-values to TSV and JSON output
   --pval_loc                  The exponential location used for converting scores to p-values.
   --pval_scale                The exponential scale used for converting scores to p-values
   --tsv                       Use TSV output format
   --json                      Use JSON output format
   --bed                       Use BED output format
+  --bpaf                      Use BPAF output format: each repeat aligned to its consensus (requires --out)
   --max_consensus INT [1000000] 
                               The maximum length of consensus pattern to include in output
   --show_seq                  Output repetitive region
@@ -164,6 +165,8 @@ pub struct Settings {
     pub ultra_out: bool,
     pub bed_out: bool,
     pub json_out: bool,
+    /// BPAF alignment output (not in upstream ULTRA, and not in the settings block).
+    pub bpaf_out: bool,
 
     pub show_counts: bool,
     pub show_seq: bool,
@@ -232,10 +235,11 @@ pub struct Settings {
     pub multi_option: bool,
 
     /// Score and report repeats as the C++ does (ULTRA 1.2.2 with the fixes
-    /// of pull request 95). This changes two things: the model charges the
-    /// bases after an indel as the C++ does (`UModel::upstream_indel_windows`),
-    /// and each consensus comes from the single walk of the C++ instead of
-    /// the indel test and realignment of `RepeatRegion::create_logo`. No
+    /// of pull request 95). Among other things, the model charges the bases
+    /// after an indel as the C++ does (`UModel::upstream_indel_windows`),
+    /// each consensus comes from the single walk of the C++ instead of the
+    /// indel test and realignment of `RepeatRegion::create_logo`, and
+    /// repeats are ordered and joined across windows as in the C++. No
     /// command-line option sets this. The `ultra` binary turns it on when the
     /// environment variable `ULTRA_UPSTREAM_COMPAT` is set to anything but
     /// `0` or the empty string, which is how the differential tests compare
@@ -263,6 +267,7 @@ impl Default for Settings {
             ultra_out: false,
             bed_out: false,
             json_out: false,
+            bpaf_out: false,
             show_counts: false,
             show_seq: false,
             show_deltas: false,
@@ -317,6 +322,16 @@ impl Default for Settings {
             multi_option: false,
             upstream_compat: false,
         }
+    }
+}
+
+/// Exit status for a rejected command line or tune file: 2. The C++ exits with 0, and
+/// so does this port when `ULTRA_UPSTREAM_COMPAT` is set.
+pub fn usage_error_code() -> i32 {
+    if std::env::var_os("ULTRA_UPSTREAM_COMPAT").is_some_and(|v| !v.is_empty() && v != "0") {
+        0
+    } else {
+        2
     }
 }
 
@@ -811,6 +826,7 @@ fn option_table() -> Vec<OptDef> {
         flag!(b"", &["tsv"], false, ultra_out),
         flag!(b"", &["json"], false, json_out),
         flag!(b"", &["bed"], false, bed_out),
+        flag!(b"", &["bpaf"], false, bpaf_out),
         val!(b"", &["max_consensus"], false, max_consensus_period, i32, "INT"),
         flag!(b"", &["show_seq"], false, show_seq),
         flag!(b"", &["show_delta"], false, show_deltas),
@@ -1001,6 +1017,12 @@ fn parse_args(settings: &mut Settings, argv: &[String]) -> Result<(), CliExit> {
         let def = &defs[idx];
         match def.kind {
             Kind::Help | Kind::Flag | Kind::FlagF32 => {
+                // `--pval_loc 3`: upstream takes a number only as `--pval_loc=3`.
+                if def.kind == Kind::FlagF32 && value.is_empty() && !settings.upstream_compat && i < args.len() && args[i].parse::<f32>().is_ok() {
+                    results[idx].push(args[i].clone());
+                    i += 1;
+                    continue;
+                }
                 // get_flag_value: an empty value means "true".
                 results[idx].push(if value.is_empty() {
                     "true".to_string()
@@ -1014,9 +1036,16 @@ fn parse_args(settings: &mut Settings, argv: &[String]) -> Result<(), CliExit> {
                     results[idx].push(value.to_string());
                     collected += 1;
                 }
-                // The minimum (one value) is taken from the next argument whatever it looks like.
+                // The minimum (one value) is taken from the next argument; upstream takes it
+                // whatever it looks like (`-o --json` wrote a file named `--json`), here
+                // another option is not a value.
+                let is_option = |a: &str| match classify(a) {
+                    Cls::Long(name, _) => find(true, name).is_some(),
+                    Cls::Short(name, _) => std::str::from_utf8(&[name]).ok().and_then(|n| find(false, n)).is_some(),
+                    _ => false,
+                };
                 if collected < 1 {
-                    if i < args.len() {
+                    if i < args.len() && (settings.upstream_compat || !is_option(&args[i])) {
                         results[idx].push(args[i].clone());
                         i += 1;
                     } else {
@@ -1144,9 +1173,9 @@ impl Settings {
 
     /// Parse arguments (`argv[0]` is the program name) and validate them.
     /// Returns false (after writing a message to stderr) when validation fails.
-    /// Like the C++, it exits the process for `--help`, `--cite`, unknown
-    /// arguments (code 0) and CLI11 exceptions (code 255, printed the way
-    /// `main` does).
+    /// Like the C++, it exits the process for `--help`, `--cite` (code 0), unknown
+    /// arguments ([`usage_error_code`]) and CLI11 exceptions (code 255, printed the
+    /// way `main` does).
     pub fn parse_input(&mut self, argv: &[String]) -> bool {
         let mut err = String::new();
         let r = self.try_parse_input(argv, &mut err);
@@ -1154,16 +1183,16 @@ impl Settings {
         match r {
             Ok(passed) => passed,
             Err(CliExit::Help(text)) => {
-                print!("{}", text);
+                crate::writers::print_stdout(&text);
                 let _ = std::io::stdout().flush();
                 std::process::exit(0)
             }
             Err(CliExit::Extras(msg)) => {
                 eprintln!("Unrecognized flag or argument: {}", msg);
-                std::process::exit(0)
+                std::process::exit(usage_error_code())
             }
             Err(CliExit::Cite) => {
-                print!("{}", CITE_TEXT);
+                crate::writers::print_stdout(CITE_TEXT);
                 let _ = std::io::stdout().flush();
                 std::process::exit(0)
             }
@@ -1222,14 +1251,31 @@ impl Settings {
             if self.show_logo_nums {
                 fail("--show_logo is only available with --json\n");
             }
+            // The C++ accepts it (and ignores it) without --json.
+            if self.show_wid && !self.upstream_compat {
+                fail("--show_wid is only available with --json\n");
+            }
         }
 
         if (self.ultra_out || self.json_out || self.bed_out) && self.suppress_out {
             fail("--suppress is incompatible with --tsv, --json, and --bed\n");
         }
 
+        if self.bpaf_out && self.suppress_out {
+            fail("--suppress is incompatible with --bpaf\n");
+        }
+
+        // BPAF is binary, and the settings block goes to stdout.
+        if self.bpaf_out && self.out_file.is_empty() {
+            fail("--bpaf requires an output file path provided to --out\n");
+        }
+
         if self.mask_file.is_empty() && self.mask_with_n {
-            fail("--maskn requires an output file path provided to --mask\n");
+            fail(if self.upstream_compat {
+                "--maskn requires an output file path provided to --mask\n"
+            } else {
+                "--nmask requires an output file path provided to --mask\n"
+            });
         }
 
         if self.threads < 1 {
@@ -1238,15 +1284,74 @@ impl Settings {
 
         // long long vs unsigned long long: the signed side converts to unsigned.
         if self.window_size != -1 && (self.window_size as u64) < self.max_period {
-            fail("--winsize cannot be smaller than --period\n");
+            fail(if self.upstream_compat { "--winsize cannot be smaller than --period\n" } else { "--win_size cannot be smaller than --period\n" });
         }
 
         if self.windows < self.threads as i64 {
             fail("--windows must be at least as large as --threads\n");
         }
 
+        // These used to pass and then panic, wrap or loop: a negative
+        // --win_size or --overlap (other than -1, "not set") became a huge
+        // unsigned size, and --windows is narrowed to a 32-bit int.
+        if self.window_size < -1 {
+            fail("--win_size must be at least 1\n");
+        }
+        if self.overlap < -1 {
+            fail("--overlap must be at least 0\n");
+        }
+        if self.windows > i32::MAX as i64 {
+            fail("--windows must be at most 2147483647\n");
+        }
+
         if self.max_period < 1 {
             fail("--period must be at least 1\n");
+        }
+        // Larger values overflowed size arithmetic or were narrowed to a 32-bit int.
+        if self.max_period > i32::MAX as u64 {
+            fail("--period must be at most 2147483647\n");
+        }
+        if self.split_depth > i32::MAX as u64 {
+            fail("--split_depth must be at most 2147483647\n");
+        }
+        // An overlap longer than the window lowered the scores of joined repeats.
+        if self.window_size > 0 && self.overlap > self.window_size {
+            fail("--overlap cannot be larger than --win_size\n");
+        }
+
+        // The model takes these as 32-bit ints; larger values used to wrap
+        // (to "no indels", or to a small count).
+        if self.max_insert > i32::MAX as u64 {
+            fail("--inserts must be at most 2147483647\n");
+        }
+        if self.max_delete > i32::MAX as u64 {
+            fail("--deletes must be at most 2147483647\n");
+        }
+
+        // NaN fails no comparison, so the range checks below let it through
+        // and the model was built from NaN probabilities.
+        for (name, v) in [
+            ("--score", self.min_score as f64),
+            ("--tune_fdr", self.tune_fdr),
+            ("--at", self.at as f64),
+            ("--match", self.match_probability as f64),
+            ("--decay", self.period_decay as f64),
+            ("--nr", self.transition_nr as f64),
+            ("--rn", self.transition_rn as f64),
+            ("--ri", self.transition_ri as f64),
+            ("--rd", self.transition_rd as f64),
+            ("--ii", self.transition_ii as f64),
+            ("--dd", self.transition_dd as f64),
+            ("--split_threshold", self.split_threshold as f64),
+            ("--pval_loc", self.p_value_loc as f64),
+            ("--pval_scale", self.p_value_scale as f64),
+        ] {
+            if v.is_nan() {
+                fail(&format!("{name} must be a number\n"));
+            }
+        }
+        if self.acgt.iter().any(|v| v.is_nan()) {
+            fail("--acgt arguments must be numbers\n");
         }
 
         if (self.at as f64) < 0.0 || (self.at as f64) > 1.0 {
@@ -1283,8 +1388,9 @@ impl Settings {
         if !frac_ok(self.period_decay, false) {
             fail("--decay must be > 0.0 and <= 1.0\n");
         }
-        if !frac_ok(self.transition_nr, true) {
-            fail("--nr must be >= 0.0 and <= 1.0\n");
+        // at 1 a window is all repeat and has no start to trace back to
+        if !frac_ok(self.transition_nr, true) || self.transition_nr >= 1.0 {
+            fail("--nr must be >= 0.0 and < 1.0\n");
         }
         if !frac_ok(self.transition_rn, true) {
             fail("--rn must be >= 0.0 and <= 1.0\n");
@@ -1303,14 +1409,21 @@ impl Settings {
         }
 
         if self.split_threshold <= 0.0 {
-            fail("--splitval must be > 0.0\n");
+            fail(if self.upstream_compat { "--splitval must be > 0.0\n" } else { "--split_threshold must be > 0.0\n" });
         }
 
         if self.tune_fdr < 0.0 || self.tune_fdr > 1.0 {
             fail("--tune_fdr must be >= 0 and <= 1.0\n");
         }
 
-        if self.tune_only || self.tune_medium || self.tune_large || self.tune_indels {
+        // --tune_file is a tuning grid, so it tunes (the C++ ignored it
+        // without --tune).
+        if self.tune_only
+            || self.tune_medium
+            || self.tune_large
+            || self.tune_indels
+            || !self.tune_param_path.is_empty()
+        {
             self.tune = true;
         }
 
@@ -1319,7 +1432,11 @@ impl Settings {
         }
 
         if !self.tune_param_path.is_empty() && (self.tune_medium || self.tune_large) {
-            fail("Cannot use both --tune_file and (--tune_small or --tune_large).\n");
+            fail(if self.upstream_compat {
+                "Cannot use both --tune_file and (--tune_small or --tune_large).\n"
+            } else {
+                "Cannot use both --tune_file and (--tune_medium or --tune_large).\n"
+            });
         }
 
         let mut c = 0;
@@ -1332,12 +1449,15 @@ impl Settings {
         if self.bed_out {
             c += 1;
         }
+        if self.bpaf_out {
+            c += 1;
+        }
 
         if c > 1 && self.out_file.is_empty() {
             fail("Output file path must be provided when using multiple output formats .\n");
         }
 
-        if !(self.ultra_out || self.json_out || self.bed_out) {
+        if !(self.ultra_out || self.json_out || self.bed_out || self.bpaf_out) {
             self.ultra_out = true;
         }
 
@@ -1419,6 +1539,14 @@ impl Settings {
             self.window_size = factor.wrapping_mul(self.max_period) as i64;
         }
 
+        // calculate_num_states makes read_all read the whole file
+        // (windows = -1), but it runs here only without --win_size, so with
+        // one (as in a tuning run, which never prints the memory estimate)
+        // the input was streamed after all.
+        if self.read_all {
+            self.windows = -1;
+        }
+
         self.a_freq = (self.at as f64 / 2.0) as f32;
         self.t_freq = (self.at as f64 / 2.0) as f32;
         self.c_freq = ((1.0 - self.at as f64) / 2.0) as f32;
@@ -1441,12 +1569,32 @@ impl Settings {
     }
 
     /// The text `print_memory_usage` writes to stdout.
+    ///
+    /// The C++ counts a score for every model state in every column of a
+    /// window. This port keeps every state only for two columns and, for
+    /// the rest, the background and match scores and the traceback entries,
+    /// `max_period + 1` of each per column (see `umatrix`), plus, for models
+    /// that use the blocked steady-state kernel, ten emission scores per
+    /// window position (see `umodel`), so "DP matrix cells" and "Total size"
+    /// are computed for that layout. The other lines are the C++ ones.
     pub fn memory_usage_string(&mut self) -> String {
         let num_states = self.calculate_num_states();
-        let mut dp_size = num_states as u64;
         // All the C++ arithmetic here is on 64-bit integers that may wrap.
         let total_window: i64 = self.window_size.wrapping_add(self.overlap.wrapping_mul(2));
-        dp_size = dp_size.wrapping_mul(total_window as u64);
+        let rows_per_column = self.max_period.wrapping_add(1);
+        // History scores and traceback entries for every column, plus every
+        // state of the previous and the current column.
+        let mut dp_size = rows_per_column
+            .wrapping_mul(total_window as u64)
+            .wrapping_mul(2)
+            .wrapping_add((num_states as u64).wrapping_mul(2));
+        // The blocked steady-state kernel also keeps emission scores by
+        // window position.
+        if crate::umodel::uses_blocked_kernel(self.max_insert as usize, self.max_delete as usize) {
+            dp_size = dp_size.wrapping_add(
+                crate::umodel::POSITION_EMISSION_ARRAYS.wrapping_mul(total_window as u64),
+            );
+        }
         let mut s = String::new();
         s.push_str("----------------------------\n");
         s.push_str(&format!("Maximum repeat period: {}\n", self.max_period));
@@ -1472,8 +1620,27 @@ impl Settings {
         s
     }
 
-    pub fn print_memory_usage(&mut self) {
-        print!("{}", self.memory_usage_string());
+    /// The "Total size" of [`memory_usage_string`](Self::memory_usage_string) in bytes,
+    /// or `None` when it does not fit in 64 bits. With `read_all` the whole input is
+    /// held in memory and its size is not known here, so the estimate leaves the
+    /// queue of sequence windows out.
+    pub fn memory_usage_bytes(&mut self) -> Option<u64> {
+        let num_states = self.calculate_num_states() as u64;
+        let total_window = u64::try_from(self.window_size.checked_add(self.overlap.checked_mul(2)?)?).ok()?;
+        let mut cells = self.max_period.checked_add(1)?.checked_mul(total_window)?.checked_mul(2)?.checked_add(num_states.checked_mul(2)?)?;
+        if crate::umodel::uses_blocked_kernel(self.max_insert as usize, self.max_delete as usize) {
+            cells = cells.checked_add(crate::umodel::POSITION_EMISSION_ARRAYS.checked_mul(total_window)?)?;
+        }
+        let matrices = cells.checked_mul(u64::try_from(self.threads).ok()?)?.checked_mul(4)?;
+        if self.read_all {
+            return Some(matrices);
+        }
+        matrices.checked_add(total_window.checked_mul(u64::try_from(self.windows).ok()?)?)
+    }
+
+    /// Writes [`memory_usage_string`](Self::memory_usage_string) to stdout.
+    pub fn print_memory_usage(&mut self) -> std::io::Result<()> {
+        std::io::stdout().lock().write_all(self.memory_usage_string().as_bytes())
     }
 
     /// Settings as the JSON fragment written into output files.
@@ -1627,7 +1794,7 @@ pub fn tune_settings_for_path(path: &str) -> Vec<String> {
         }
         Err(_) => {
             eprintln!("Failed to open settings file: {}", path);
-            std::process::exit(0);
+            std::process::exit(usage_error_code());
         }
     }
 
@@ -1639,12 +1806,17 @@ pub fn tune_settings_for_path(path: &str) -> Vec<String> {
     for (i, line) in lines.iter().enumerate() {
         let line_num = i + 1; // we 1 index line numbers
         if !line.is_empty() {
-            let argv = string_to_args(line);
+            // The line is checked as it will be used: appended to a command line. (The
+            // C++ parses the line alone, so its first word is taken for the program
+            // name and never checked.)
+            let mut argv = vec!["ultra".to_string(), "in.fa".to_string()];
+            argv.extend(string_to_args(line));
             let mut test_settings = Settings::new();
             test_settings.prepare_settings();
+            test_settings.set_multi_option();
             if !test_settings.parse_input(&argv) {
                 eprintln!("Invalid arguments on line {} in tune file. \"{}\"", line_num, line);
-                std::process::exit(0);
+                std::process::exit(usage_error_code());
             }
             settings.push(line.to_string());
         }
@@ -1745,15 +1917,126 @@ mod tests {
         );
     }
 
+    /// Every line but the two sizes, which this port computes for its own
+    /// matrix layout, is the C++ one.
     #[test]
     fn memory_cases_match_reference() {
+        let same_as_cpp = |text: &str| -> String {
+            text.lines()
+                .filter(|l| !l.starts_with("DP matrix cells: ") && !l.starts_with("Total size: "))
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
         for (a, expected) in MEM_CASES {
             let mut s = Settings::new();
             let mut err = String::new();
             assert_eq!(s.try_parse_input(&argv(a), &mut err), Ok(true), "{:?}: {}", a, err);
             s.assign_settings();
-            assert_eq!(&s.memory_usage_string(), expected, "memory for {:?}", a);
+            let got = s.memory_usage_string();
+            assert_eq!(same_as_cpp(&got), same_as_cpp(expected), "memory for {:?}", a);
+            assert_eq!(got.lines().count(), expected.lines().count(), "memory for {:?}", a);
         }
+    }
+
+    /// Values that used to pass validation and then misbehave are rejected:
+    /// NaN (which fails no range comparison), negative --win_size / --overlap
+    /// other than -1, --windows above i32::MAX, and --show_wid without --json.
+    #[test]
+    fn invalid_values_are_rejected() {
+        let cases: &[(&[&str], &str)] = &[
+            (&["--at", "nan"], "--at must be a number\n"),
+            (&["--decay", "NaN"], "--decay must be a number\n"),
+            (&["-s", "nan"], "--score must be a number\n"),
+            (&["--split_threshold", "nan"], "--split_threshold must be a number\n"),
+            (&["--acgt", "0.25", "nan", "0.25", "0.25"], "--acgt arguments must be numbers\n"),
+            (&["--win_size", "-2"], "--win_size must be at least 1\n"),
+            (&["--overlap", "-5"], "--overlap must be at least 0\n"),
+            (&["--windows", "4294967296"], "--windows must be at most 2147483647\n"),
+            (&["--show_wid"], "--show_wid is only available with --json\n"),
+        ];
+        for (extra, msg) in cases {
+            // The file first: --acgt takes the arguments after it.
+            let mut a = vec!["./ultra", "x.fa"];
+            a.extend_from_slice(extra);
+            let mut s = Settings::new();
+            let mut err = String::new();
+            assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(false), "{a:?}");
+            assert!(err.contains(msg), "{a:?}: {err}");
+        }
+        for ok in [&["--win_size", "-1"][..], &["--overlap", "-1"], &["--overlap", "0"], &["--json", "--show_wid"], &["--score=-inf"]] {
+            let mut a = vec!["./ultra"];
+            a.extend_from_slice(ok);
+            a.push("x.fa");
+            let mut s = Settings::new();
+            let mut err = String::new();
+            assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(true), "{a:?}: {err}");
+        }
+    }
+
+    /// --tune_file tunes; --read_all reads the whole file with --win_size too.
+    #[test]
+    fn tune_file_tunes_and_read_all_keeps_its_window_count() {
+        let mut s = Settings::new();
+        let mut err = String::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "--tune_file", "grid.txt", "x.fa"]), &mut err), Ok(true));
+        assert!(s.tune);
+
+        let mut s = Settings::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "-r", "--win_size", "2000", "x.fa"]), &mut err), Ok(true));
+        s.assign_settings();
+        assert_eq!(s.windows, -1);
+    }
+
+    /// -r has no window count to multiply by; the estimate is the DP matrices alone.
+    #[test]
+    fn memory_estimate_with_read_all_leaves_out_the_window_queue() {
+        let mut err = String::new();
+        let mut streamed = Settings::new();
+        assert_eq!(streamed.try_parse_input(&argv(&["./ultra", "x.fa"]), &mut err), Ok(true));
+        streamed.assign_settings();
+        let queue = (streamed.window_size + 2 * streamed.overlap) as u64 * streamed.windows as u64;
+        let with_queue = streamed.memory_usage_bytes().unwrap();
+
+        let mut whole = Settings::new();
+        assert_eq!(whole.try_parse_input(&argv(&["./ultra", "-r", "x.fa"]), &mut err), Ok(true));
+        whole.assign_settings();
+        assert_eq!(whole.memory_usage_bytes(), Some(with_queue - queue));
+    }
+
+    /// -i / -d above i32::MAX are rejected instead of wrapping.
+    #[test]
+    fn indel_counts_must_fit_in_an_int() {
+        for (a, msg) in [
+            (["./ultra", "-i", "2147483648", "x.fa"], "--inserts must be at most 2147483647\n"),
+            (["./ultra", "-d", "4294967296", "x.fa"], "--deletes must be at most 2147483647\n"),
+        ] {
+            let mut s = Settings::new();
+            let mut err = String::new();
+            assert_eq!(s.try_parse_input(&argv(&a), &mut err), Ok(false), "{a:?}");
+            assert!(err.contains(msg), "{a:?}: {err}");
+        }
+        let mut s = Settings::new();
+        let mut err = String::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "-i", "2147483647", "x.fa"]), &mut err), Ok(true), "{err}");
+    }
+
+    /// The two sizes, worked out by hand for the default model.
+    #[test]
+    fn memory_sizes_for_the_compact_matrix() {
+        let mut s = Settings::new();
+        let mut err = String::new();
+        assert_eq!(s.try_parse_input(&argv(&["./ultra", "-t", "3", "x.fa"]), &mut err), Ok(true));
+        s.assign_settings();
+        let text = s.memory_usage_string();
+        // 101 rows (max period 100, plus the background) of scores and of
+        // tracebacks over a 100,200-column window, plus 2 x 1,970 states,
+        // plus ten emission scores per window position (10 insertion and 10
+        // deletion states use the blocked kernel).
+        let per_thread: u64 = 2 * 101 * 100_200 + 2 * 1_970 + 10 * 100_200;
+        assert!(text.contains(&format!("DP matrix cells: {per_thread}\n")), "{text}");
+        // Four bytes each, three threads, plus 1,024 windows of 100,200 bytes.
+        let total = per_thread * 3 * 4 + 1_024 * 100_200;
+        assert!(text.contains(&format!("({total} bytes)")), "{text}");
     }
 
     #[test]
@@ -3935,7 +4218,11 @@ Total size: 2.76 GB (2959135872 bytes)
             "Exc",
             r####"--out: 1 required TEXT missing"####,
         ),
-        (&["./ultra", "ex.fa", "--mem", "-o", "--json"], "Ok", r####""####),
+        (
+            &["./ultra", "ex.fa", "--mem", "-o", "--json"],
+            "Exc",
+            r####"--out: 1 required TEXT missing"####,
+        ),
         (
             &["./ultra", "ex.fa", "--mem", "-p"],
             "Exc",
@@ -3964,7 +4251,10 @@ Total size: 2.76 GB (2959135872 bytes)
             "Exc",
             r####"Could not convert: --at = abc"####,
         ),
-        (&["./ultra", "ex.fa", "--mem", "--at", "nan"], "Ok", r####""####),
+        // The C++ accepts NaN here (no range comparison fails for it); the
+        // port rejects it.
+        (&["./ultra", "ex.fa", "--mem", "--at", "nan"], "Fail", r####"--at must be a number
+"####),
         (
             &["./ultra", "ex.fa", "--mem", "--at", "inf"],
             "Fail",
@@ -3988,11 +4278,7 @@ Total size: 2.76 GB (2959135872 bytes)
 "####,
         ),
         (&["./ultra", "ex.fa", "--mem", "--score=-3"], "Ok", r####""####),
-        (
-            &["./ultra", "ex.fa", "--mem", "--pval_loc", "3.0"],
-            "Exc",
-            r####"Could not convert: --pval_loc = true"####,
-        ),
+        (&["./ultra", "ex.fa", "--mem", "--pval_loc", "3.0"], "Ok", r####""####),
         (
             &["./ultra", "ex.fa", "--mem", "--pval_loc"],
             "Exc",
@@ -4194,7 +4480,7 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--nmask"],
             "Fail",
-            r####"--maskn requires an output file path provided to --mask
+            r####"--nmask requires an output file path provided to --mask
 "####,
         ),
         (
@@ -4205,13 +4491,15 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--win_size", "5", "-p", "10"],
             "Fail",
-            r####"--winsize cannot be smaller than --period
+            r####"--win_size cannot be smaller than --period
 "####,
         ),
+        // The C++ accepts this and then misbehaves; the port rejects it.
         (
             &["./ultra", "ex.fa", "--mem", "--win_size", "-5", "-p", "10"],
-            "Ok",
-            r####""####,
+            "Fail",
+            r####"--win_size must be at least 1
+"####,
         ),
         (
             &["./ultra", "ex.fa", "--mem", "--win_size", "-1", "-p", "10"],
@@ -4251,7 +4539,7 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--nr", "-0.5"],
             "Fail",
-            r####"--nr must be >= 0.0 and <= 1.0
+            r####"--nr must be >= 0.0 and < 1.0
 "####,
         ),
         (
@@ -4287,13 +4575,13 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--split_threshold", "0"],
             "Fail",
-            r####"--splitval must be > 0.0
+            r####"--split_threshold must be > 0.0
 "####,
         ),
         (
             &["./ultra", "ex.fa", "--mem", "--splitval", "-1"],
             "Fail",
-            r####"--splitval must be > 0.0
+            r####"--split_threshold must be > 0.0
 "####,
         ),
         (
@@ -4322,13 +4610,13 @@ Total size: 2.76 GB (2959135872 bytes)
         (
             &["./ultra", "ex.fa", "--mem", "--tune_medium", "--tune_file", "x"],
             "Fail",
-            r####"Cannot use both --tune_file and (--tune_small or --tune_large).
+            r####"Cannot use both --tune_file and (--tune_medium or --tune_large).
 "####,
         ),
         (
             &["./ultra", "ex.fa", "--mem", "--tune_large", "--tune_file", "x"],
             "Fail",
-            r####"Cannot use both --tune_file and (--tune_small or --tune_large).
+            r####"Cannot use both --tune_file and (--tune_medium or --tune_large).
 "####,
         ),
         (&["./ultra", "ex.fa", "--mem", "--tune_file", "x"], "Ok", r####""####),
@@ -4406,7 +4694,9 @@ Total size: 2.76 GB (2959135872 bytes)
             "Exc",
             r####"Could not convert: --overlap = abc"####,
         ),
-        (&["./ultra", "ex.fa", "--mem", "--overlap", "-7"], "Ok", r####""####),
+        // The C++ accepts this and then panics; the port rejects it.
+        (&["./ultra", "ex.fa", "--mem", "--overlap", "-7"], "Fail", r####"--overlap must be at least 0
+"####),
         (
             &["./ultra", "ex.fa", "--mem", "--min_split_window", "abc"],
             "Exc",
