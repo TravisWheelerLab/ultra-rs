@@ -30,7 +30,6 @@ use crate::mask::MRegion;
 use crate::repeat::{get_next_repeat, joint_repeat_region, repeats_overlap, RepeatRegion};
 use crate::repeat_splitter::{validate_splits, SplitWindow};
 use crate::sequence_window::SequenceWindow;
-use crate::std_sort::std_sort;
 use crate::symbol::symbol_for_char;
 use crate::umodel::UModel;
 use crate::writers::{
@@ -90,7 +89,7 @@ impl WindowAnalyzer {
         let prev = model.matrix.previous_column_index;
         model.matrix.calculate_traceback(prev);
         let mut i: i32 = 0;
-        let mut r = get_next_repeat(sequence, &model.matrix, &mut i, settings.upstream_compat);
+        let mut r = get_next_repeat(sequence, &model.matrix, &mut i);
 
         while let Some(mut rr) = r {
             if store_trace_and_sequence {
@@ -124,31 +123,21 @@ impl WindowAnalyzer {
             }
 
             repeats.push(rr);
-            r = get_next_repeat(sequence, &model.matrix, &mut i, settings.upstream_compat);
+            r = get_next_repeat(sequence, &model.matrix, &mut i);
         }
 
         repeats
     }
 }
 
-/// C++ `CompareRepeatOrder`: descending by sequence ID, then by start, so
-/// the earliest repeat ends up at the back of the vector.
-pub fn compare_repeat_order(lhs: &RepeatRegion, rhs: &RepeatRegion) -> bool {
-    if lhs.sequence_id != rhs.sequence_id {
-        return lhs.sequence_id > rhs.sequence_id;
-    }
-    lhs.sequence_start > rhs.sequence_start
-}
-
-/// The order [`Ultra::output_repeats`] takes repeats in, outside
-/// upstream-compat mode: `Less` when `lhs` is taken first. It is the order of
-/// [`compare_repeat_order`] (sequence ID, then start) with its ties broken:
-/// by period, then longest first, then by read ID.
+/// The order [`Ultra::output_repeats`] takes repeats in: `Less` when `lhs`
+/// is taken first. Repeats are ordered by sequence ID, then start, then
+/// period, then longest first, then read ID.
 ///
-/// `compare_repeat_order` leaves repeats with one start tied, and the sort
-/// that uses it is not stable, so which of them came first depended on what
-/// else was being sorted: a run with `--disable_streaming_out` could join or
-/// write them in another order than a streaming run. Two repeats from one
+/// Ordering by sequence ID and start alone leaves repeats with one start
+/// tied, and with an unstable sort which of them came first would depend on
+/// what else was being sorted: a run with `--disable_streaming_out` could
+/// join or write them in another order than a streaming run. Two repeats from one
 /// window differ in start or period, because each starts one period and one
 /// column before its first repeat column. A joined repeat keeps the start,
 /// period and read ID of its first piece, so a streaming run that puts it
@@ -440,7 +429,6 @@ impl Ultra {
 
             model.tp_zero_to_match = settings.transition_nr;
             model.tp_match_to_zero = settings.transition_rn;
-            model.upstream_indel_windows = settings.upstream_compat;
 
             model.tp_match_to_insertion = settings.transition_ri;
             model.tp_match_to_deletion = settings.transition_rd;
@@ -451,7 +439,6 @@ impl Ultra {
             model.calculate_scores();
 
             let mut splitter = SplitWindow::new();
-            splitter.upstream_compat = settings.upstream_compat;
             if !settings.no_split {
                 splitter.allocate_split_window(4, settings.max_period.wrapping_add(1) as i32);
             } else {
@@ -897,7 +884,7 @@ impl Ultra {
                 let mut take = None;
                 if repeats_overlap(&r, back, true) {
                     take = Some(self.out_repeats.len() - 1);
-                } else if !self.settings.upstream_compat {
+                } else {
                     let r_end = r.sequence_start.wrapping_add(r.repeat_length);
                     for k in (0..self.out_repeats.len() - 1).rev() {
                         let c = &self.out_repeats[k];
@@ -916,7 +903,7 @@ impl Ultra {
                     }
                 }
                 let Some(k) = take else { break };
-                let mut joined = joint_repeat_region(&r, &self.out_repeats[k], self.settings.upstream_compat)
+                let mut joined = joint_repeat_region(&r, &self.out_repeats[k])
                     .expect("overlapping repeats join");
                 if let Some(splits) = joined.splits.as_mut() {
                     let consensi = joined.consensi.as_mut().expect("consensi is null");
@@ -928,10 +915,8 @@ impl Ultra {
 
             r.sort_consensi();
             // unsigned long / int, compared with unsigned long long.
-            // --min_length: documented, but the C++ never applies it.
-            let long_enough = self.settings.upstream_compat || r.repeat_length >= self.settings.min_length;
             if r.region_score >= self.score_threshold
-                && long_enough
+                && r.repeat_length >= self.settings.min_length
                 && r.repeat_length / (r.repeat_period as i64 as u64) >= self.settings.min_units
             {
                 self.output_repeat(&r, false)?;
@@ -1025,17 +1010,10 @@ impl Ultra {
             });
     }
 
-    /// C++ `SortRepeatRegions`: puts the repeat to take first at the back.
-    /// In upstream-compat mode this is libstdc++ `std::sort` with
-    /// [`compare_repeat_order`], where the order of tied repeats matters and
-    /// depends on the arrangement before the sort. Otherwise the order is
-    /// [`repeat_output_order`], reversed.
+    /// C++ `SortRepeatRegions`: puts the repeat to take first at the back,
+    /// in the order of [`repeat_output_order`], reversed.
     pub fn sort_repeat_regions(&mut self) {
-        if self.settings.upstream_compat {
-            std_sort(&mut self.out_repeats, |a, b| compare_repeat_order(a, b));
-        } else {
-            self.out_repeats.sort_by(|a, b| repeat_output_order(b, a));
-        }
+        self.out_repeats.sort_by(|a, b| repeat_output_order(b, a));
     }
 
     /// C++ `Coverage`.
@@ -1054,17 +1032,6 @@ mod tests {
         r.sequence_start = start;
         r.read_id = read_id;
         r
-    }
-
-    #[test]
-    fn compare_repeat_order_is_descending() {
-        let a = region(1, 10, 0);
-        let b = region(1, 20, 0);
-        let c = region(2, 0, 0);
-        assert!(compare_repeat_order(&b, &a));
-        assert!(!compare_repeat_order(&a, &b));
-        assert!(compare_repeat_order(&c, &b));
-        assert!(!compare_repeat_order(&a, &a));
     }
 
     /// Repeats with one start are taken by period, then longest first, then
@@ -1155,22 +1122,19 @@ mod tests {
     /// --min_length drops shorter repeats (the C++ never applied it).
     #[test]
     fn min_length_filters_repeats() {
-        for (compat, want) in [(false, 50), (true, 58)] {
-            let mut s = library_settings();
-            s.suppress_out = true;
-            s.min_length = 10;
-            s.upstream_compat = compat;
-            let mut ultra = Ultra::new(&s);
-            for (k, len) in [8u64, 10, 40].into_iter().enumerate() {
-                let mut r = region(1, 1000 * k as u64, 0);
-                r.repeat_period = 2;
-                r.repeat_length = len;
-                r.region_score = 100.0;
-                ultra.out_repeats.push(r);
-            }
-            ultra.output_repeats(true).unwrap();
-            assert_eq!(ultra.coverage(), want, "compat {compat}");
+        let mut s = library_settings();
+        s.suppress_out = true;
+        s.min_length = 10;
+        let mut ultra = Ultra::new(&s);
+        for (k, len) in [8u64, 10, 40].into_iter().enumerate() {
+            let mut r = region(1, 1000 * k as u64, 0);
+            r.repeat_period = 2;
+            r.repeat_length = len;
+            r.region_score = 100.0;
+            ultra.out_repeats.push(r);
         }
+        ultra.output_repeats(true).unwrap();
+        assert_eq!(ultra.coverage(), 50);
     }
 
     /// A string as long as the matrix does not fit (the column after the

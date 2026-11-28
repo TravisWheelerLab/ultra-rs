@@ -1,0 +1,215 @@
+command: ultra in.fa -m 0.95 --json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa -m 0.95 --json",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": false,
+"json_out": true,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 10,
+"max_delete": 10,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.950000,
+"period_decay": 0.850000,
+"transition_nr": 0.010000,
+"transition_rn": 0.050000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+{"Repeats": [
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 241,
+"Length": 11,
+"Period": 1,
+"Score": 8.816082,
+"Consensus": "G"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 1832,
+"Length": 158,
+"Period": 6,
+"Score": 162.871109,
+"Consensus": "CGGCGT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 2636,
+"Length": 20,
+"Period": 2,
+"Score": 24.921104,
+"Consensus": "CG"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 864,
+"Length": 78,
+"Period": 7,
+"Score": 97.631897,
+"Consensus": "ACCCGTT"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 1386,
+"Length": 20,
+"Period": 6,
+"Score": 14.803528,
+"Consensus": "ACTCAG"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 3387,
+"Length": 210,
+"Period": 47,
+"Score": 136.594452,
+"Consensus": "AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 3681,
+"Length": 269,
+"Period": 47,
+"Score": 205.791840,
+"Consensus": "AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 3905,
+"Length": 122,
+"Period": 49,
+"Score": 30.146362,
+"Consensus": "AAAACTCATATTTGCTGAACTCAAGATTCTCGTGTCAGCGATCGCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 3996,
+"Length": 273,
+"Period": 48,
+"Score": 278.290405,
+"Consensus": "AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATTCCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 4298,
+"Length": 233,
+"Period": 47,
+"Score": 181.809692,
+"Consensus": "AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 4532,
+"Length": 193,
+"Period": 46,
+"Score": 174.795166,
+"Consensus": "AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 4724,
+"Length": 368,
+"Period": 47,
+"Score": 385.244324,
+"Consensus": "AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 5095,
+"Length": 137,
+"Period": 48,
+"Score": 75.361938,
+"Consensus": "AAATCTCATATTACTGAACTCAAGATTCTCGTGTCAGCGGTCCCAAGC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 5281,
+"Length": 14,
+"Period": 6,
+"Score": 12.529419,
+"Consensus": "ATTTGT"},
+
+{"SequenceName": "seq2 synthetic sequence 2",
+"Start": 390,
+"Length": 1240,
+"Period": 60,
+"Score": 1151.147095,
+"Consensus": "AAAATACAGAGCAGACCTGTGCTATGGGAGTAATGGTTGCCCGTGCTGCTGCCATCTCCT"},
+
+{"SequenceName": "seq2 synthetic sequence 2",
+"Start": 3027,
+"Length": 331,
+"Period": 7,
+"Score": 434.607544,
+"Consensus": "CTGTTGG"},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 843,
+"Length": 98,
+"Period": 3,
+"Score": 143.318298,
+"Consensus": "ACT"},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 1070,
+"Length": 90,
+"Period": 3,
+"Score": 119.910622,
+"Consensus": "GTT"},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 1467,
+"Length": 12,
+"Period": 1,
+"Score": 4.773071,
+"Consensus": "C"},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 2223,
+"Length": 230,
+"Period": 33,
+"Score": 183.562042,
+"Consensus": "AAAAACTATTGGCATTTAATCTCTGACCAATAC"},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 2462,
+"Length": 153,
+"Period": 33,
+"Score": 179.243988,
+"Consensus": "AAAAACTATTGGCATTTAATCTCTGACCAATAC"}]
+}----------------------------
+Annotation Coverage: 0.3002 (4183 / 13934)
+==== stderr ====

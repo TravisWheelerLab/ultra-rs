@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use super::{c_str, table_sequence_name, fmt_g, to_string_f32, RepeatFileWriter};
+use super::{c_str, fmt_g, sequence_id, to_string_f32, RepeatFileWriter};
 use crate::cli::Settings;
 use crate::repeat::RepeatRegion;
 
@@ -58,7 +58,7 @@ impl RepeatFileWriter for TabFileWriter {
         repeat: &RepeatRegion,
         out: &mut dyn Write,
     ) -> io::Result<()> {
-        let name = table_sequence_name(settings, &repeat.sequence_name);
+        let name = sequence_id(&repeat.sequence_name);
 
         // Columns 1 (name) 2 (start) 3 (end) 4 (period) 5 (score)
         write!(
@@ -124,7 +124,7 @@ impl RepeatFileWriter for TabFileWriter {
                     }
 
                     let hidden = settings.max_consensus_period < repeat.repeat_period;
-                    if settings.max_consensus_period >= 0 && hidden && !settings.upstream_compat {
+                    if settings.max_consensus_period >= 0 && hidden {
                         // One '.' per subrepeat listed in SubrepeatStarts.
                         // The C++ writes one per consensus, including those
                         // of splits that were removed, so the column could
@@ -137,14 +137,9 @@ impl RepeatFileWriter for TabFileWriter {
                         }
                     } else if settings.max_consensus_period >= 0 {
                         let rc = repeat.consensi.as_ref().expect("consensi is null");
-                        for i in 0..rc.len() {
-                            let mut con: &[u8] = b".";
-                            if settings.max_consensus_period >= repeat.repeat_period && rc.len() > i
-                            {
-                                if i > 0 && rc[i] == rc[i - 1] {
-                                    continue;
-                                }
-                                con = &rc[i];
+                        for (i, con) in rc.iter().enumerate() {
+                            if i > 0 && rc[i] == rc[i - 1] {
+                                continue;
                             }
                             if i > 0 {
                                 consensi.push(b',');
@@ -248,8 +243,6 @@ mod tests {
         r.splits = Some(vec![9, -1, 21]);
         r.consensi = Some(vec![b"CAG".to_vec(), b"CAG".to_vec(), b"CTG".to_vec(), b"CTG".to_vec()]);
         assert_eq!(render(&s, &r).lines().nth(1).unwrap(), "chr1\t100\t130\t3\t42.200001\t.\t3\t0,9,21\t.,.,.");
-        s.upstream_compat = true;
-        assert_eq!(render(&s, &r).lines().nth(1).unwrap(), "chr1\t100\t130\t3\t42.200001\t.\t3\t0,9,21\t.,.,.,.");
     }
 
     #[test]

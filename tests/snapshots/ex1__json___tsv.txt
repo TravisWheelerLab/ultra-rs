@@ -1,0 +1,5 @@
+command: ultra in.fa --json --tsv
+status: 2
+==== stdout ====
+==== stderr ====
+Output file path must be provided when using multiple output formats .

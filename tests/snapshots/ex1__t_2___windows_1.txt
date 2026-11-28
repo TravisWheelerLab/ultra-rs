@@ -1,0 +1,5 @@
+command: ultra in.fa -t 2 --windows 1
+status: 2
+==== stdout ====
+==== stderr ====
+--windows must be at least as large as --threads

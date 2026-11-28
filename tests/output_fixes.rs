@@ -49,15 +49,13 @@ fn dir(name: &str) -> PathBuf {
 }
 
 /// The TSV rows (`-c --hs`), split into fields.
-fn rows(input: &Path, args: &[&str], compat: bool) -> Vec<Vec<String>> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ultra"));
-    cmd.args(["-t", "1", "--tsv", "-c", "--hs"]).args(args).arg(input);
-    if compat {
-        cmd.env("ULTRA_UPSTREAM_COMPAT", "1");
-    } else {
-        cmd.env_remove("ULTRA_UPSTREAM_COMPAT");
-    }
-    let out = cmd.output().unwrap();
+fn rows(input: &Path, args: &[&str]) -> Vec<Vec<String>> {
+    let out = Command::new(env!("CARGO_BIN_EXE_ultra"))
+        .args(["-t", "1", "--tsv", "-c", "--hs"])
+        .args(args)
+        .arg(input)
+        .output()
+        .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8(out.stdout)
         .unwrap()
@@ -80,8 +78,8 @@ fn a_repeat_across_a_window_boundary_keeps_its_counts_and_score() {
     let input = d.join("cross.fa");
     fs::write(&input, [b">s\n".as_slice(), &s, b"\n"].concat()).unwrap();
 
-    let whole = rows(&input, &[], false);
-    let split = rows(&input, &["--win_size", "1000", "--overlap", "100"], false);
+    let whole = rows(&input, &[]);
+    let split = rows(&input, &["--win_size", "1000", "--overlap", "100"]);
     assert_eq!(whole.len(), 1, "{whole:?}");
     assert_eq!(split.len(), 1, "{split:?}");
     // Start, end, period and the substitution / insertion / deletion counts.
@@ -90,19 +88,13 @@ fn a_repeat_across_a_window_boundary_keeps_its_counts_and_score() {
     }
     let (a, b): (f64, f64) = (whole[0][4].parse().unwrap(), split[0][4].parse().unwrap());
     assert!((a - b).abs() < 0.05 * a, "scores {a} and {b}");
-
-    // The C++ gives the joined record no counts and about half the score.
-    let compat = rows(&input, &["--win_size", "1000", "--overlap", "100"], true);
-    assert_eq!(compat.len(), 1);
-    assert_eq!(&compat[0][7..10], ["0", "0", "0"]);
 }
 
-/// What ultra writes to stdout for `args` and `input`, outside compat mode.
+/// What ultra writes to stdout for `args` and `input`.
 fn ultra_stdout(args: &[&str], input: &Path) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_ultra"))
         .args(args)
         .arg(input)
-        .env_remove("ULTRA_UPSTREAM_COMPAT")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -280,10 +272,10 @@ fn pieces_of_a_repeat_join_past_a_repeat_of_another_period() {
     let input = d.join("sat.fa");
     fs::write(&input, [b">s\n".as_slice(), &s, b"\n"].concat()).unwrap();
 
-    let windowed = rows(&input, &["--win_size", "200", "--overlap", "100"], false);
+    let windowed = rows(&input, &["--win_size", "200", "--overlap", "100"]);
     let long: Vec<_> = windowed.iter().filter(|r| r[3] == "51").collect();
     assert_eq!(long.len(), 1, "one period-51 record: {windowed:?}");
-    let whole = rows(&input, &[], false);
+    let whole = rows(&input, &[]);
     let whole_long: Vec<_> = whole.iter().filter(|r| r[3] == "51").collect();
     assert_eq!(long[0][1..3], whole_long[0][1..3], "{windowed:?} vs {whole:?}");
 }

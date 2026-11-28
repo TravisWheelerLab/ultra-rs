@@ -1,0 +1,70 @@
+command: ultra in.fa --fdr
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: #
+Number of model states: #
+Total sequence window size: #
+DP matrix cells: #
+Threads: #
+Sequence window queue length: #
+Total size: # GB (# bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa --fdr",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": #,
+"p_value_scale": #,
+"p_value_freq": #,
+"ultra_out": true,
+"json_out": false,
+"bed_out": false,
+"max_consensus_period": #,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": #,
+"window_size": #,
+"overlap": #,
+"windows": #,
+"min_score": -#,
+"min_length": #,
+"min_units": #,
+"max_period": #,
+"max_insert": #,
+"max_delete": #,
+"a_freq": #,
+"c_freq": #,
+"g_freq": #,
+"t_freq": #,
+"match_probability": #,
+"period_decay": #,
+"transition_nr": #,
+"transition_rn": #,
+"transition_ri": #,
+"transition_rd": #,
+"transition_ii": #,
+"transition_dd": #,
+"no_split": false,
+"max_split": #,
+"split_threshold": #,
+"split_depth": #,
+"min_split_window": #
+}}
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+----------------------------
+Annotation Coverage: # (# / #)
+Estimated false discovery rate: #
+==== stderr ====

@@ -50,11 +50,6 @@ pub struct SplitWindow {
 
     pub place: i32,
     pub length: i32,
-
-    /// Give a unit position with no A, C, G or T base in the segment the
-    /// symbol T, as the C++ does (its share is 0.25 / 0, so the first symbol
-    /// wins), instead of `'*'`.
-    pub upstream_compat: bool,
 }
 
 /// `SymbolForChar(c) - 1`: 0..3 for `TCAG`, -1 for anything else.
@@ -456,7 +451,7 @@ impl SplitWindow {
         for i in 0..r.repeat_period {
             // Only N (or other non-ACGT) bases at this unit position: it
             // cannot be resolved, which the consensus shows as '*'.
-            if self.logo_totals[i as usize] == 0.0 && !self.upstream_compat {
+            if self.logo_totals[i as usize] == 0.0 {
                 continue;
             }
             let mut best_val = consensus_threshold;
@@ -544,8 +539,7 @@ pub fn validate_splits(consensi: &mut [Vec<u8>], splits: &mut [i32], join_thresh
 #[cfg(test)]
 mod tests {
     //! Expected bit patterns come from the upstream Release objects
-    //! (`RepeatSplitter.cpp.o`). End-to-end splitting is pinned against the
-    //! C++ in `repeat::tests`.
+    //! (`RepeatSplitter.cpp.o`).
     use super::*;
 
     /// A unit position that only N bases fill cannot be resolved: '*', not
@@ -557,13 +551,9 @@ mod tests {
         r.repeat_length = 12;
         r.sequence = b"ANANANANANAN".to_vec();
         r.logo_numbers = Some((0..12).map(|i| i % 2).collect());
-        for compat in [false, true] {
-            let mut w = SplitWindow::new();
-            w.upstream_compat = compat;
-            w.allocate_split_window(4, 3);
-            let c = w.consensus_for_region(&r, 0, 12, 0.65);
-            assert_eq!(c, if compat { b"AT".to_vec() } else { b"A*".to_vec() });
-        }
+        let mut w = SplitWindow::new();
+        w.allocate_split_window(4, 3);
+        assert_eq!(w.consensus_for_region(&r, 0, 12, 0.65), b"A*".to_vec());
     }
 
     #[test]

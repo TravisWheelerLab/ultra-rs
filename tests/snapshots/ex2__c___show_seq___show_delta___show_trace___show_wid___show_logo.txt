@@ -1,0 +1,8 @@
+command: ultra in.fa -c --show_seq --show_delta --show_trace --show_wid --show_logo
+status: 2
+==== stdout ====
+==== stderr ====
+--show_delta is only available with --json
+--show_trace is only available with --json
+--show_logo is only available with --json
+--show_wid is only available with --json

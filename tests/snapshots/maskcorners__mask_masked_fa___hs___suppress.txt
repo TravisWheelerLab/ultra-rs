@@ -1,0 +1,48 @@
+command: ultra in.fa --mask masked.fa --hs --suppress
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+----------------------------
+Annotation Coverage: 0.3093 (378 / 1222)
+==== stderr ====
+==== file masked.fa ====
+>ends in a repeat
+TCAAATCGGACATGGTTTGGCCCCATACATACTGAGTGGTCGCGGGTCTTTTCGCCCTTTAGTAGGAGACCCCTTCTTACCTTGGTGGCCCTCAGTATTAACTCACCTCCGTGTTACGag
+cagcagcagcagcagcagcagcagcagcagcagcagcagcag
+cagcagcagcagcagcagcagcagcagcagcagcagcagcag
+cagcagcagcagcagcagcagcagcagcagcagcagcagcag
+>no repeats here
+CTAGACCCAACAAAAACGTTAGTGGGACTCGCTCTGGTCTTGCAAATATA
+AGCTAGTGGTCTACCCCGGACCGCGTAGCCAAACTAGTCCTTCGGAGGGA
+TGTCATGGTAGCTTTCGCGCAAGTTCAACACCGGGGACTTTTCTCCACAT
+GACAGGAGATATGGTTGTCAGCAAAAATCGAGCTAGGCGCGAAATACTCA
+TAAAACTGTGAGGAGATCGACCCAAGATAGGTCCGTAATCCTGTAAAACA
+ATGGGCATAGGGCATGACAAAACCCCTAGAGTTGACCCTAATCGATCAGT
+CTCACAGCCTAACCACAGCAAAAACACATTGTAATTGGCGGTATAATACT
+ACGGTGACAACCCCACAACGGGCGAAGAGGACTATACTCTGCGGCGAACC
+>empty record
+>iupac digits and a comment before the repeat
+GACCGTCGTGCCCTAGCAGTTATCTCGGTGAGTCTCGTAARYKMSWBDHV 0123456789 -*.
+;acgt acgt acgt acgt acgt
+ATATTCTGGTTTCGTGGGCTCCAGGCGAAa
+gattacagattacagattacagattacagattacagattaca
+gattacagattacagattacagattacagattacagattaca
+gattacagattacagattacagattacagattacagattaca
+gTGTCCCCGTGCCGGGGTAGAATTGTGTGGAATGGGTCCATTTCTAGCAGTATGCTGCATGGGGTTCACTTGTAGACCAT
+>two repeats around an N run
+CACTTACACGAGTAAAGCTGTACCCTTATCTCGCCCAAAAAACTTGTAAACTGCGAGAtg
+tgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtg
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+aaggcaaggcaaggcaaggcaaggcaaggcaaggcaaggcaaggcaaggcaaggcaaggc
+CGTTATTTGAGACACACAATTTGGTCTACAGATGACTTAATCGGAAAAACTACTCAACAG

@@ -1,0 +1,5 @@
+command: ultra in.fa -p5
+status: 2
+==== stdout ====
+==== stderr ====
+Argument '-p5' is not allowed (long arguments begin with --, filenames may not begin with -)

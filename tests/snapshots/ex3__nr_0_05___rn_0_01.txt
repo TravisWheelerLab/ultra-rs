@@ -1,0 +1,109 @@
+command: ultra in.fa --nr 0.05 --rn 0.01
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa --nr 0.05 --rn 0.01",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": true,
+"json_out": false,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 10,
+"max_delete": 10,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.700000,
+"period_decay": 0.850000,
+"transition_nr": 0.050000,
+"transition_rn": 0.010000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+80_AT	49	175	16	11.664597	AATATTCTTAATATTT	1	0	AATATTCTTAATATTT
+80_AT	366	388	4	2.446149	AATT	1	0	AATT
+80_AT	409	433	2	2.946074	AT	1	0	AT
+80_AT	768	938	8	5.640266	AAATTTAT	2	0,107	***T***T,***AT*TA
+80_AT	1023	1079	6	7.839867	AAAATT	1	0	AAAATT
+80_AT	1235	1284	4	-0.041481	AATT	1	0	*AAT
+80_AT	1712	1814	31	4.985008	AAAATATTTATATAATTAATTATGTTTTTTT	1	0	AAAATATTTATATAATTAATTATGTTTTTTT
+80_AT	1913	1948	1	0.466263	T	1	0	T
+80_AT	1957	2023	15	2.967041	ATATTGTTATTATTT	1	0	ATATTGTTATTATTT
+80_AT	2246	2291	2	7.364594	AT	1	0	AT
+80_AT	2323	2398	13	2.162285	AAATAGTATTATT	1	0	AAATAGTATTATT
+80_AT	2738	2817	22	-0.024094	AACTATTAATTTTATATTTAAG	1	0	AACTATTAATTTTATATTTAAG
+80_AT	2857	2900	16	3.913208	AAATTTGTAATATAAT	1	0	AAATTTGTAATATAAT
+80_AT	3070	3100	1	4.638321	T	1	0	T
+80_AT	3139	3161	1	1.769012	T	1	0	T
+80_AT	3318	3364	8	4.515259	AATCAATT	1	0	AATCAATT
+80_AT	3471	3518	2	0.398361	AT	2	0,25	**,AT
+80_AT	3702	3796	21	-1.076782	AATTATAATTTTTTATTTATT	1	0	AATTATAATTTTTTATTTATT
+80_AT	3870	3965	15	13.061676	AAATTTATATATATT	1	0	AAATTTATATATATT
+80_AT	4024	4088	6	0.920074	ATTTTT	1	0	ATTTTT
+80_AT	4114	4251	3	-1.783752	AAA	3	0,82,110	**A,***,**A
+80_AT	4356	4400	10	9.585251	AAAATTATAT	1	0	AAAATTATAT
+80_AT	4404	4535	5	165.875107	AAAGC	1	0	AAAGC
+80_AT	4557	4592	3	5.596451	AAT	1	0	AAT
+80_AT	4636	4669	4	3.935055	ATAT	1	0	ATAT
+80_AT	4682	4847	17	-7.868889	AAATAATCCTATAATAT	1	0	AAATAATCCTATAATAT
+80_AT	4938	4999	6	6.564171	AAAAAT	2	0,31	**ATAA,**C*AA
+80_AT	5034	5067	14	1.512970	AATATATTATTTTT	1	0	AATATATTATTTTT
+80_AT	5126	5175	6	2.296776	AATTAT	1	0	AATTAT
+80_AT	5391	5513	13	13.792694	AAATATAATTTTT	1	0	AAATATAATTTTT
+80_AT	5570	5687	10	4.707184	AAATATATAT	1	0	AAATATATAT
+80_AT	5879	5964	6	2.575836	AATATT	2	0,54	**AT*A,***TGT
+80_AT	6417	6450	7	1.804642	ATATTTT	1	0	ATATTTT
+80_AT	7670	7741	5	-0.061203	AAATT	2	0,46	***AT,*A*TA
+80_AT	7778	7802	7	3.138611	AATTGTT	1	0	AATTGTT
+80_AT	7848	7909	17	8.021423	AAATAGTGTTTAATACT	1	0	AAATAGTGTTTAATACT
+80_AT	7937	8033	23	-0.105484	AAATATACATGTTAATTTAAATT	1	0	AAATATACATGTTAATTTAAATT
+80_AT	8406	9136	7	996.796387	AAAATAC	1	0	AAAATAC
+80_AT	9540	9626	17	-1.609558	AATTTATTATTATTCAC	1	0	AATTTATTATTATTCAC
+80_AT	9691	9741	10	2.650757	ATATTTATTT	1	0	ATATTTATTT
+----------------------------
+Annotation Coverage: 0.3527 (3453 / 9791)
+==== stderr ====

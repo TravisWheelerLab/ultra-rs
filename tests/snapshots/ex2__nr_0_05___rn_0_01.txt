@@ -1,0 +1,87 @@
+command: ultra in.fa --nr 0.05 --rn 0.01
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa --nr 0.05 --rn 0.01",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": true,
+"json_out": false,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 10,
+"max_delete": 10,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.700000,
+"period_decay": 0.850000,
+"transition_nr": 0.050000,
+"transition_rn": 0.010000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+period_1000_repeat	598	660	15	0.128914	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	1598	1660	15	0.128799	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	2598	2660	15	0.128632	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	3598	3660	15	0.128845	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	4598	4660	15	0.128784	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	5598	5660	15	0.128784	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	6598	6660	15	0.128815	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	7598	7660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	8598	8660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	9598	9660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	10598	10660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	11598	11660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	12598	12660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	13598	13660	15	0.129028	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	14598	14660	15	0.128540	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	15598	15660	15	0.128540	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	16598	16660	15	0.128540	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+period_1000_repeat	17598	17660	15	0.128540	AAGGTAGCGCCGGGT	1	0	AAGGTAGCGCCGGGT
+----------------------------
+Annotation Coverage: 0.0620 (1116 / 18000)
+==== stderr ====

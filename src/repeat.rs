@@ -245,15 +245,12 @@ impl RepeatRegion {
     /// Builds the logo (symbol counts per unit position) and accumulates
     /// `mismatches`, `insertions` and `deletions`.
     ///
-    /// With `upstream_consensus` this is C++ `CreateLogo` as corrected in
-    /// TravisWheelerLab/ULTRA pull request 95: one walk along the matrix
-    /// traceback that takes every insertion and deletion the model calls as
-    /// real. That walk puts later copies in the wrong columns when the model
-    /// calls a deletion in a copy that is full length, or misses an indel.
-    ///
-    /// Without it, the three counters still come from that walk, so they
-    /// agree with the stored traceback. `create_logo` then builds the logo
-    /// in two steps:
+    /// The three counters come from one walk along the matrix traceback that
+    /// takes every insertion and deletion the model calls as real, so they
+    /// agree with the stored traceback. Built from that walk alone, the logo
+    /// has later copies in the wrong columns when the model calls a deletion
+    /// in a copy that is full length, or misses an indel, so `create_logo`
+    /// builds the logo in two steps:
     ///
     /// 1. It repeats the walk, and at each insertion or deletion compares
     ///    the bases that follow with the logo so far, once at the column the
@@ -266,12 +263,7 @@ impl RepeatRegion {
     /// In a simulation of 5,200 noisy tandem arrays, this gave a consensus
     /// that was a rotation of the planted unit in 2,798, against 2,534 for
     /// the single walk.
-    pub fn create_logo(
-        &mut self,
-        window: &SequenceWindow,
-        matrix: &UMatrix,
-        upstream_consensus: bool,
-    ) {
+    pub fn create_logo(&mut self, window: &SequenceWindow, matrix: &UMatrix) {
         let walk = self.walk_logo(window, matrix, false);
         self.mismatches += walk.mismatches;
         self.insertions += walk.insertions;
@@ -281,15 +273,13 @@ impl RepeatRegion {
         self.events = Some(events);
 
         let mut logo = walk.logo;
-        if !upstream_consensus {
-            // With no indel on the path there is nothing to test, and the
-            // second walk would repeat the first.
-            if walk.insertions != 0 || walk.deletions != 0 {
-                logo = self.walk_logo(window, matrix, true).logo;
-            }
-            for _ in 0..REALIGN_PASSES {
-                logo = self.realign_logo(&logo, window.seq());
-            }
+        // With no indel on the path there is nothing to test, and the
+        // second walk would repeat the first.
+        if walk.insertions != 0 || walk.deletions != 0 {
+            logo = self.walk_logo(window, matrix, true).logo;
+        }
+        for _ in 0..REALIGN_PASSES {
+            logo = self.realign_logo(&logo, window.seq());
         }
         self.logo = Some(logo);
     }
@@ -1154,13 +1144,7 @@ impl RepeatRegion {
 /// starting there, with its logo and consensus built, or `None`. Sets `*pos`
 /// to the column after the repeat (or to `overlap + length` when none is
 /// found). Requires `matrix.calculate_traceback` to have run on `window`.
-/// `upstream_consensus` is passed to [`RepeatRegion::create_logo`].
-pub fn get_next_repeat(
-    window: &SequenceWindow,
-    matrix: &UMatrix,
-    pos: &mut i32,
-    upstream_consensus: bool,
-) -> Option<Box<RepeatRegion>> {
+pub fn get_next_repeat(window: &SequenceWindow, matrix: &UMatrix, pos: &mut i32) -> Option<Box<RepeatRegion>> {
     if *pos == 0 {
         *pos = 1;
     }
@@ -1233,7 +1217,7 @@ pub fn get_next_repeat(
 
     if let Some(r) = region.as_mut() {
         r.read_id = window.read_id;
-        r.create_logo(window, matrix, upstream_consensus);
+        r.create_logo(window, matrix);
         r.create_consensus_from_logo();
     }
 
@@ -1265,14 +1249,7 @@ pub fn repeats_overlap(r1: &RepeatRegion, r2: &RepeatRegion, require_same_period
 /// window start; `r2`'s split positions are moved to where `r2` sits in the
 /// joined region.
 ///
-/// With `upstream_compat` the join is the one the C++ makes. The sequence,
-/// traceback, score changes and logo numbers are `r1`'s up to the start of
-/// `r2` and `r2`'s from there. The joined region has no substitutions,
-/// insertions or deletions, and its score is the average of the two scores
-/// weighted by length, so a repeat that crosses a window boundary scores
-/// about the average of its pieces.
-///
-/// Otherwise the joined region is all of `r1` followed by the part of `r2`
+/// The joined region is all of `r1` followed by the part of `r2`
 /// past `r1`'s end, and every field changes from `r1` to `r2` there: the four
 /// per-position fields, the counts (those of `r1`'s [`RepeatRegion::events`]
 /// and of `r2`'s past `r1`'s end, when both regions have them) and the score.
@@ -1283,19 +1260,12 @@ pub fn repeats_overlap(r1: &RepeatRegion, r2: &RepeatRegion, require_same_period
 /// has `r1`'s score. When the two regions start at the same position, the
 /// longer one takes the place of `r1`, so both argument orders give the same
 /// result unless the regions are equally long.
-pub fn joint_repeat_region(
-    r1: &RepeatRegion,
-    r2: &RepeatRegion,
-    upstream_compat: bool,
-) -> Option<Box<RepeatRegion>> {
+pub fn joint_repeat_region(r1: &RepeatRegion, r2: &RepeatRegion) -> Option<Box<RepeatRegion>> {
     if !repeats_overlap(r1, r2, false) {
         return None;
     }
-    if !upstream_compat
-        && r1.sequence_start == r2.sequence_start
-        && r2.repeat_length > r1.repeat_length
-    {
-        return joint_repeat_region(r2, r1, false);
+    if r1.sequence_start == r2.sequence_start && r2.repeat_length > r1.repeat_length {
+        return joint_repeat_region(r2, r1);
     }
 
     let mut joint = Box::new(RepeatRegion::new());
@@ -1303,11 +1273,10 @@ pub fn joint_repeat_region(
     joint.string_consensus = r1.string_consensus.clone();
     joint.sequence_start = r1.sequence_start;
 
-    // The joint region is the first `s1_seq_len` positions of r1 followed by
-    // r2 without its first `r2_skip` positions. If r2 ends inside r1 the
-    // joint region is all of r1 and none of r2. Upstream 1.2.2 always takes
-    // r1 up to the start of r2 and then all of r2, which cuts r1 short in
-    // that case.
+    // The joint region is all of r1 followed by r2 without its first
+    // `r2_skip` positions. If r2 ends inside r1 the joint region is all of r1
+    // and none of r2. Upstream 1.2.2 always takes r1 up to the start of r2
+    // and then all of r2, which cuts r1 short in that case.
     let r2_inside = r2.sequence_start.wrapping_add(r2.repeat_length)
         <= r1.sequence_start.wrapping_add(r1.repeat_length);
     let overlap: i32 = r1
@@ -1316,15 +1285,8 @@ pub fn joint_repeat_region(
         .wrapping_sub(r2.sequence_start) as i32;
     // Where r2 starts in the joint region. unsigned long narrowed to int.
     let r2_offset: i32 = r2.sequence_start.wrapping_sub(r1.sequence_start) as i32;
-    let mut s1_seq_len: i32 = r2_offset;
-    let mut r2_skip: i32 = 0;
-    if r2_inside {
-        s1_seq_len = r1.repeat_length as i32;
-        r2_skip = r2.repeat_length as i32;
-    } else if !upstream_compat {
-        s1_seq_len = r1.repeat_length as i32;
-        r2_skip = overlap;
-    }
+    let s1_seq_len: i32 = r1.repeat_length as i32;
+    let r2_skip: i32 = if r2_inside { r2.repeat_length as i32 } else { overlap };
     joint.repeat_length =
         (s1_seq_len.wrapping_add((r2.repeat_length as i32).wrapping_sub(r2_skip))) as i64 as u64;
 
@@ -1384,47 +1346,46 @@ pub fn joint_repeat_region(
         joint.logo_numbers = Some(ln);
     }
 
-    // Weighted average of the scores. `1.0 - pct_seq1` is computed in double.
+    // Without score changes for both regions: the average of the two scores
+    // weighted by length. `1.0 - pct_seq1` is computed in double.
     let pct_seq1: f32 = s1_seq_len as f32 / joint.repeat_length as f32;
     let pct_seq2: f32 = (1.0f64 - pct_seq1 as f64) as f32;
 
     joint.region_score = (r1.region_score * pct_seq1) + (r2.region_score * pct_seq2);
 
-    if !upstream_compat {
-        // The score and the counts of the same pieces as the fields above:
-        // r1, then r2 without its first `r2_skip` positions.
-        let (kept, skipped) = (s1_seq_len as i64 as u64, r2_skip as i64 as u64);
-        if r2_inside {
-            joint.region_score = r1.region_score;
-        } else if let (Some(sc2), Some(joint_scores)) = (&r2.scores, &joint.scores) {
-            // `get_next_repeat` scores a region from its first repeat column
-            // to the column after its last one, or to its last column when
-            // it runs to the end of the window. The first `period + 1` score
-            // changes lead up to the first repeat column, and the last score
-            // change is the one into the last repeat column. So a score is
-            // the sum of the score changes from index `period + 1` on, plus
-            // an end term for the column after the repeat. The joined score
-            // is that sum over the joined score changes, plus r2's end term,
-            // because the joined region ends where r2 does.
-            let after_entry = |sc: &[f32], period: i32| -> f64 {
-                sc.iter().skip(period.max(0) as usize + 1).map(|&d| d as f64).sum()
-            };
-            let end_term = r2.region_score as f64 - after_entry(sc2, r2.repeat_period);
-            joint.region_score = (after_entry(joint_scores, r1.repeat_period) + end_term) as f32;
-        }
-        if let (Some(e1), Some(e2)) = (&r1.events, &r2.events) {
-            let mut events: Vec<RepeatEvent> =
-                e1.iter().copied().filter(|e| e.position < kept).collect();
-            events.extend(e2.iter().filter(|e| e.position >= skipped).map(|e| RepeatEvent {
-                position: e.position - skipped + kept,
-                kind: e.kind,
-            }));
-            let count = |kind: EventKind| events.iter().filter(|e| e.kind == kind).count() as i32;
-            joint.mismatches = count(EventKind::Substitution);
-            joint.insertions = count(EventKind::Insertion);
-            joint.deletions = count(EventKind::Deletion);
-            joint.events = Some(events);
-        }
+    // The score and the counts of the same pieces as the fields above:
+    // r1, then r2 without its first `r2_skip` positions.
+    let (kept, skipped) = (s1_seq_len as i64 as u64, r2_skip as i64 as u64);
+    if r2_inside {
+        joint.region_score = r1.region_score;
+    } else if let (Some(sc2), Some(joint_scores)) = (&r2.scores, &joint.scores) {
+        // `get_next_repeat` scores a region from its first repeat column
+        // to the column after its last one, or to its last column when
+        // it runs to the end of the window. The first `period + 1` score
+        // changes lead up to the first repeat column, and the last score
+        // change is the one into the last repeat column. So a score is
+        // the sum of the score changes from index `period + 1` on, plus
+        // an end term for the column after the repeat. The joined score
+        // is that sum over the joined score changes, plus r2's end term,
+        // because the joined region ends where r2 does.
+        let after_entry = |sc: &[f32], period: i32| -> f64 {
+            sc.iter().skip(period.max(0) as usize + 1).map(|&d| d as f64).sum()
+        };
+        let end_term = r2.region_score as f64 - after_entry(sc2, r2.repeat_period);
+        joint.region_score = (after_entry(joint_scores, r1.repeat_period) + end_term) as f32;
+    }
+    if let (Some(e1), Some(e2)) = (&r1.events, &r2.events) {
+        let mut events: Vec<RepeatEvent> =
+            e1.iter().copied().filter(|e| e.position < kept).collect();
+        events.extend(e2.iter().filter(|e| e.position >= skipped).map(|e| RepeatEvent {
+            position: e.position - skipped + kept,
+            kind: e.kind,
+        }));
+        let count = |kind: EventKind| events.iter().filter(|e| e.kind == kind).count() as i32;
+        joint.mismatches = count(EventKind::Substitution);
+        joint.insertions = count(EventKind::Insertion);
+        joint.deletions = count(EventKind::Deletion);
+        joint.events = Some(events);
     }
 
     // r2 adds nothing, so the splits of r1 stand.
@@ -1474,21 +1435,11 @@ pub fn joint_repeat_region(
 
 /// C++ `dead_func`: joins a region with itself. Unused upstream.
 pub fn dead_func(r1: &RepeatRegion) -> Option<Box<RepeatRegion>> {
-    joint_repeat_region(r1, r1, true)
+    joint_repeat_region(r1, r1)
 }
 
 #[cfg(test)]
 mod tests {
-    //! Expected values come from a C++ harness linked against the upstream
-    //! sources (`repeat.cpp`, `RepeatSplitter.cpp`, `umatrix.cpp`,
-    //! `umodel.cpp`, ...) at commit 7947d0d (1.2.2 plus the fixes in
-    //! TravisWheelerLab/ULTRA pull request 95), since the port makes the same
-    //! fixes. The harness splits a sequence into windows of
-    //! `ws` new symbols with `ov` overlap, runs the `AnalyzeSequenceWindow`
-    //! repeat loop (store + split with the default split settings), then the
-    //! join / `ValidateSplits` / `SortConsensi` steps of
-    //! `OutputRepeats(flush)`, and dumps every field. The dump format is
-    //! reproduced by `dump` below; floats are printed as bit patterns.
     use super::*;
 
     /// A region for the join tests: period 2, a score change of
@@ -1528,9 +1479,7 @@ mod tests {
 
     /// A joined region is all of r1 followed by the part of r2 past r1's
     /// end, in every field: the counts, the score, and the sequence,
-    /// traceback, score changes and logo numbers. With upstream_compat it
-    /// has no counts, the length-weighted average score, and per-position
-    /// fields stitched at r2's start, as in the C++.
+    /// traceback, score changes and logo numbers.
     #[test]
     fn joint_region_is_stitched_at_one_point() {
         use EventKind::{Deletion, Insertion, Substitution};
@@ -1544,7 +1493,7 @@ mod tests {
             25.0,
             &[(2, Substitution), (4, Insertion), (5, Insertion), (6, Insertion), (9, Deletion), (12, Substitution)],
         );
-        let j = joint_repeat_region(&r1, &r2, false).unwrap();
+        let j = joint_repeat_region(&r1, &r2).unwrap();
         assert_eq!(j.repeat_length, 30);
         assert_eq!((j.mismatches, j.insertions, j.deletions), (2, 4, 1));
         // The score: the joined score changes past the first period + 1,
@@ -1583,43 +1532,28 @@ mod tests {
             }
         }
 
-        let c = joint_repeat_region(&r1, &r2, true).unwrap();
-        assert_eq!((c.mismatches, c.insertions, c.deletions), (0, 0, 0));
-        let pct1 = 15.0f32 / 30.0;
-        assert_eq!(c.region_score, 30.0 * pct1 + 25.0 * ((1.0f64 - pct1 as f64) as f32));
-        let mut traceback = r1.traceback[..15].to_vec();
-        traceback.extend_from_slice(&r2.traceback);
-        assert_eq!(c.traceback, traceback);
-
         // r2 inside r1: r1's counts, score and fields.
         let inner = counted_region(3, 104, 10, 9.0, &[(5, Substitution), (6, Insertion), (7, Deletion)]);
-        let k = joint_repeat_region(&r1, &inner, false).unwrap();
+        let k = joint_repeat_region(&r1, &inner).unwrap();
         assert_eq!((k.mismatches, k.insertions, k.deletions, k.region_score), (1, 2, 0, 30.0));
         assert_eq!(k.traceback, r1.traceback);
     }
 
     /// Two regions with one start (a repeat that starts in a window overlap,
     /// found by both windows) join to the longer one whichever comes first.
-    /// With upstream_compat the order matters, as in the C++.
     #[test]
     fn joining_regions_with_one_start_does_not_depend_on_their_order() {
         use EventKind::{Insertion, Substitution};
         let short = counted_region(1, 200, 12, 7.0, &[(4, Substitution), (9, Substitution)]);
         let long = counted_region(2, 200, 30, 21.0, &[(5, Substitution), (20, Insertion)]);
-        let a = joint_repeat_region(&short, &long, false).unwrap();
-        let b = joint_repeat_region(&long, &short, false).unwrap();
+        let a = joint_repeat_region(&short, &long).unwrap();
+        let b = joint_repeat_region(&long, &short).unwrap();
         assert_eq!(a, b);
         assert_eq!((a.mismatches, a.insertions, a.deletions, a.region_score), (1, 1, 0, 21.0));
         assert_eq!((&a.traceback, &a.scores, a.read_id), (&long.traceback, &long.scores, 2));
-
-        let a = joint_repeat_region(&short, &long, true).unwrap();
-        let b = joint_repeat_region(&long, &short, true).unwrap();
-        assert_ne!(a.read_id, b.read_id);
     }
     use crate::repeat_splitter::{validate_splits, SplitWindow};
-    use crate::std_sort::std_sort;
     use crate::umodel::UModel;
-    use std::fmt::Write as _;
 
     /// `upstream/ULTRA/examples/example_1.fa`.
     const T1: &[&str] = &[
@@ -1658,165 +1592,12 @@ mod tests {
         "ATGATAGAATCGGCCTTGCACAGTTCTTGCCTATACGTCACACCGTCACTCCACTATTTGATTCCACCCCGCTCGATATACAGGCGCAGACCATGTCTGA",
     ];
 
-    fn fnv1a(data: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for &b in data {
-            h = (h ^ b as u64).wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-
-    fn dump(out: &mut String, tag: &str, r: &RepeatRegion) {
-        writeln!(
-            out,
-            "{} name={} sid={} rid={} wov={} wtot={} comb={} fs={} ws={} ss={} len={} per={}",
-            tag,
-            r.sequence_name,
-            r.sequence_id,
-            r.read_id,
-            r.win_overlap_size,
-            r.win_total_length,
-            r.combined_repeat as i32,
-            r.false_start,
-            r.window_start,
-            r.sequence_start,
-            r.repeat_length,
-            r.repeat_period
-        )
-        .unwrap();
-        writeln!(
-            out,
-            " sc {:08x} {:08x} {:08x}",
-            r.start_score.to_bits(),
-            r.end_score.to_bits(),
-            r.region_score.to_bits()
-        )
-        .unwrap();
-        writeln!(out, " tb {} {}", r.traceback.len(), r.traceback_str()).unwrap();
-        writeln!(out, " seq {} {}", r.sequence.len(), r.sequence_str()).unwrap();
-        writeln!(out, " scons {}", r.string_consensus_str()).unwrap();
-        if r.logo.is_some() {
-            out.push_str(" logo");
-            for i in 0..r.repeat_period as usize {
-                out.push_str(" |");
-                for j in 0..NUM_SYMBOLS {
-                    write!(out, " {}", r.logo_at(i, j)).unwrap();
-                }
-            }
-            out.push('\n');
-        } else {
-            out.push_str(" logo null\n");
-        }
-        if let Some(c) = &r.consensus {
-            out.push_str(" cons");
-            for v in c.iter().take(r.repeat_period as usize) {
-                write!(out, " {}", v).unwrap();
-            }
-            writeln!(out, "\n getcons {}", ascii_str(&r.get_consensus())).unwrap();
-        } else {
-            out.push_str(" cons null\n");
-        }
-        match &r.logo_numbers {
-            Some(ln) => {
-                out.push_str(" ln");
-                for v in ln.iter().take(r.repeat_length as usize) {
-                    write!(out, " {}", v).unwrap();
-                }
-                out.push('\n');
-            }
-            None => out.push_str(" ln null\n"),
-        }
-        match &r.scores {
-            Some(s) => {
-                out.push_str(" scores");
-                for v in s.iter().take(r.repeat_length as usize) {
-                    write!(out, " {:08x}", v.to_bits()).unwrap();
-                }
-                out.push('\n');
-            }
-            None => out.push_str(" scores null\n"),
-        }
-        writeln!(
-            out,
-            " mid {} {} {} oc {}",
-            r.mismatches, r.insertions, r.deletions, r.overlap_correction
-        )
-        .unwrap();
-        writeln!(
-            out,
-            " lb {} lf {} fc {} bc {}",
-            r.look_back.is_some() as i32,
-            r.look_forward.is_some() as i32,
-            r.forward_counts.is_some() as i32,
-            r.back_counts.is_some() as i32
-        )
-        .unwrap();
-        match &r.splits {
-            Some(s) => {
-                write!(out, " splits {}:", s.len()).unwrap();
-                for v in s {
-                    write!(out, " {}", v).unwrap();
-                }
-                out.push('\n');
-            }
-            None => out.push_str(" splits null\n"),
-        }
-        match &r.consensi {
-            Some(c) => {
-                write!(out, " consensi {}:", c.len()).unwrap();
-                for v in c {
-                    write!(out, " {}", ascii_str(v)).unwrap();
-                }
-                out.push('\n');
-            }
-            None => out.push_str(" consensi null\n"),
-        }
-    }
-
-    /// Runs the pipeline described in the module comment; returns the dump
-    /// and the regions as they would be handed to the writers.
-    fn run(
-        seq: &[&str],
-        ws: usize,
-        ov: usize,
-        per: i32,
-        ins: i32,
-        del: i32,
-        split: bool,
-    ) -> (String, Vec<Box<RepeatRegion>>) {
-        run_model(seq, ws, ov, per, ins, del, split, true, true)
-    }
-
-    /// The crate's default model with the choice of consensus: `upstream`
-    /// for the single walk of the C++, or the default of the crate.
-    #[allow(clippy::too_many_arguments)]
-    fn run_with(
-        seq: &[&str],
-        ws: usize,
-        ov: usize,
-        per: i32,
-        ins: i32,
-        del: i32,
-        split: bool,
-        upstream: bool,
-    ) -> (String, Vec<Box<RepeatRegion>>) {
-        run_model(seq, ws, ov, per, ins, del, split, false, upstream)
-    }
-
-    /// `upstream_model` and `upstream` both true give the C++ behaviour the
-    /// hashes below were taken from.
-    #[allow(clippy::too_many_arguments)]
-    fn run_model(
-        seq: &[&str],
-        ws: usize,
-        ov: usize,
-        per: i32,
-        ins: i32,
-        del: i32,
-        split: bool,
-        upstream_model: bool,
-        upstream: bool,
-    ) -> (String, Vec<Box<RepeatRegion>>) {
+    /// Splits `seq` into windows of `ws` new symbols with `ov` overlap,
+    /// finds the repeats of each window as `Ultra` does (store, then split
+    /// with the default split settings), then joins and sorts them as
+    /// `Ultra::output_repeats` does when flushing. Returns the regions as they
+    /// would be handed to the writers.
+    fn run(seq: &[&str], ws: usize, ov: usize, per: i32, ins: i32, del: i32, split: bool) -> Vec<Box<RepeatRegion>> {
         let s: Vec<u8> = seq.concat().into_bytes();
         let max_split: i32 = if split { 10 } else { 0 };
         let split_threshold: f32 = 3.5;
@@ -1834,7 +1615,6 @@ mod tests {
         model.tp_match_to_deletion = 0.02;
         model.tp_consecutive_insertion = 0.02;
         model.tp_consecutive_deletion = 0.02;
-        model.upstream_indel_windows = upstream_model;
         model.calculate_scores();
 
         let mut splitter = SplitWindow::new();
@@ -1842,7 +1622,6 @@ mod tests {
             splitter.allocate_split_window(4, per + 1);
         }
 
-        let mut out = String::new();
         let mut all: Vec<Box<RepeatRegion>> = Vec::new();
         let mut window = SequenceWindow::new(ws, ov);
         window.sequence_name = "t".to_string();
@@ -1871,7 +1650,7 @@ mod tests {
             model.matrix.calculate_traceback(pc);
 
             let mut i: i32 = 0;
-            let mut r = get_next_repeat(&window, &model.matrix, &mut i, upstream);
+            let mut r = get_next_repeat(&window, &model.matrix, &mut i);
             while let Some(mut rr) = r {
                 rr.store_sequence(&window);
                 rr.store_traceback(&model.matrix);
@@ -1894,50 +1673,35 @@ mod tests {
                         rr.consensi = Some(vec![rr.string_consensus.clone()]);
                     }
                 }
-                writeln!(out, "pos={}", i).unwrap();
-                dump(&mut out, "R", &rr);
                 all.push(rr);
-                r = get_next_repeat(&window, &model.matrix, &mut i, upstream);
+                r = get_next_repeat(&window, &model.matrix, &mut i);
             }
-            writeln!(out, "endpos={}", i).unwrap();
             k += 1;
         }
 
-        std_sort(&mut all, |l, r| {
-            if l.sequence_id != r.sequence_id {
-                return l.sequence_id > r.sequence_id;
-            }
-            l.sequence_start > r.sequence_start
-        });
+        all.sort_by(|a, b| crate::ultra::repeat_output_order(b, a));
         let mut written = Vec::new();
         while let Some(mut r) = all.pop() {
             while let Some(next) = all.last() {
                 if !repeats_overlap(&r, next, true) {
                     break;
                 }
-                let mut j = joint_repeat_region(&r, next, true).unwrap();
+                let mut j = joint_repeat_region(&r, next).unwrap();
                 if let Some(splits) = j.splits.as_mut() {
                     validate_splits(j.consensi.as_mut().unwrap(), splits, 0.85);
                 }
-                dump(&mut out, "J", &j);
                 all.pop();
                 r = j;
             }
             r.sort_consensi();
-            dump(&mut out, "O", &r);
             written.push(r);
         }
-        (out, written)
+        written
     }
 
     #[test]
-    fn example_1_single_window_matches_cpp() {
-        let (out, written) = run(T1, 2000, 0, 100, 10, 10, true);
-        assert_eq!(
-            (out.len(), fnv1a(out.as_bytes())),
-            (14978, 0x5038ce45a802c8e1)
-        );
-
+    fn example_1_single_window() {
+        let written = run(T1, 2000, 0, 100, 10, 10, true);
         let r = &written[0];
         assert_eq!(
             (
@@ -1963,35 +1727,26 @@ mod tests {
     }
 
     #[test]
-    fn windows_with_joins_match_cpp() {
-        let (out, written) = run(T2, 500, 150, 10, 3, 3, true);
-        assert_eq!(
-            (out.len(), fnv1a(out.as_bytes())),
-            (18668, 0xde7570a479d0ee6a)
-        );
+    fn windows_with_joins() {
+        let written = run(T2, 500, 150, 10, 3, 3, true);
         assert!(written.iter().any(|r| r.combined_repeat));
 
-        let (out, written) = run(T2, 300, 120, 6, 6, 6, true);
-        assert_eq!(
-            (out.len(), fnv1a(out.as_bytes())),
-            (17251, 0x7328a59618405f90)
-        );
-        // The two copies start together and the first is the longer (170
-        // against 107), so the joined region is the first one whole. Upstream
-        // 1.2.2 cuts it to 107 and keeps the split at 123.
-        let j = written.iter().find(|r| r.combined_repeat).unwrap();
+        let written = run(T2, 300, 120, 6, 6, 6, true);
+        let joined: Vec<_> = written.iter().filter(|r| r.combined_repeat).collect();
+        assert_eq!(joined.len(), 1);
+        let j = joined[0];
         assert_eq!(
             (j.sequence_start, j.repeat_length, j.repeat_period),
-            (193, 170, 6)
+            (185, 178, 6)
         );
-        assert_eq!(j.region_score.to_bits(), 0x42195a43);
-        assert_eq!((j.start_score, j.end_score, j.mismatches), (0.0, 0.0, 0));
+        assert_eq!(j.region_score.to_bits(), 0x41ff22b3);
+        assert_eq!((j.start_score, j.end_score, j.mismatches), (0.0, 0.0, 45));
         assert_eq!(j.overlap_correction, 1);
-        assert_eq!(j.splits, Some(vec![44, 123]));
+        assert_eq!(j.splits, Some(vec![51, 131]));
         assert!(j.logo.is_none() && j.consensus.is_none());
-        assert_eq!(j.scores.as_ref().unwrap().len(), 170);
-        assert_eq!(j.logo_numbers.as_ref().unwrap().len(), 170);
-        assert_eq!(j.sequence.len(), 170);
+        assert_eq!(j.scores.as_ref().unwrap().len(), 178);
+        assert_eq!(j.logo_numbers.as_ref().unwrap().len(), 178);
+        assert_eq!(j.sequence.len(), 178);
     }
 
     /// Twenty-four copies of `ACGGTCATTG` between random flanks, with one
@@ -2009,9 +1764,8 @@ mod tests {
         // Upstream 1.2.2 does not advance the logo phase when the previous
         // copy has a deletion, so each deletion shifts the later copies by
         // one column and this array comes out with the unit `GGGGGTTTTT`.
-        for (split, upstream) in [(true, true), (false, true), (true, false), (false, false)] {
-            let (_, written) =
-                run_with(FOUR_DELETIONS, 1000, 100, 20, 10, 10, split, upstream);
+        for split in [true, false] {
+            let written = run(FOUR_DELETIONS, 1000, 100, 20, 10, 10, split);
             let r = written
                 .iter()
                 .find(|r| r.repeat_period == 10)
@@ -2039,57 +1793,12 @@ mod tests {
 
     #[test]
     fn indel_test_and_realignment_recover_the_unit_of_a_noisy_array() {
-        // With the single walk the consensus comes out as `ACCCT`, which is
-        // not a rotation of the unit. The model calls four deletions and
-        // three insertions here.
-        let (_, written) = run_with(NOISY_CCTAT, 1000, 100, 20, 10, 10, false, true);
-        let upstream = best_region(&written);
-        assert_eq!(upstream.string_consensus_str(), "ACCCT");
-
-        let (_, written) = run_with(NOISY_CCTAT, 1000, 100, 20, 10, 10, false, false);
+        // The model calls four deletions and three insertions here.
+        let written = run(NOISY_CCTAT, 1000, 100, 20, 10, 10, false);
         let r = best_region(&written);
         assert_eq!(r.string_consensus_str(), "ATCCT");
-
-        // Both report the same region and the same counts.
-        for r in [upstream, r] {
-            assert_eq!((r.sequence_start, r.repeat_length, r.repeat_period), (55, 159, 5));
-            assert_eq!((r.mismatches, r.insertions, r.deletions), (14, 3, 4));
-        }
-    }
-
-    #[test]
-    fn consensus_choice_changes_only_the_consensus() {
-        let inputs: [(&[&str], usize, usize, i32, i32, i32); 4] = [
-            (T1, 2000, 0, 100, 10, 10),
-            (T2, 500, 150, 10, 3, 3),
-            (T2, 300, 120, 6, 6, 6),
-            (NOISY_CCTAT, 1000, 100, 20, 10, 10),
-        ];
-        for (seq, ws, ov, per, ins, del) in inputs {
-            let (_, a) = run_with(seq, ws, ov, per, ins, del, true, true);
-            let (_, b) = run_with(seq, ws, ov, per, ins, del, true, false);
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(&b) {
-                assert_eq!(
-                    (a.sequence_start, a.repeat_length, a.repeat_period),
-                    (b.sequence_start, b.repeat_length, b.repeat_period)
-                );
-                assert_eq!(a.region_score.to_bits(), b.region_score.to_bits());
-                assert_eq!(
-                    (a.mismatches, a.insertions, a.deletions),
-                    (b.mismatches, b.insertions, b.deletions)
-                );
-                assert_eq!(a.traceback, b.traceback);
-                assert_eq!(a.sequence, b.sequence);
-                assert_eq!(a.logo_numbers, b.logo_numbers);
-                assert_eq!(a.splits, b.splits);
-                // An unsplit region lists its own consensus as its one
-                // sub-repeat consensus.
-                if a.splits.as_ref().is_some_and(|s| !s.is_empty()) {
-                    assert_eq!(a.consensi, b.consensi);
-                }
-            }
-        }
+        assert_eq!((r.sequence_start, r.repeat_length, r.repeat_period), (55, 159, 5));
+        assert_eq!((r.mismatches, r.insertions, r.deletions), (14, 3, 4));
     }
 
     /// A region over all of `text` (period `unit.len()`), its symbols, and a
@@ -2178,9 +1887,9 @@ mod tests {
         // r1 covers 100..150 and r2 covers 130..190, so they overlap by 20.
         let r1 = plain_region(100, 50, b'a', 10.0, vec![20]);
         let r2 = plain_region(130, 60, b'b', 20.0, vec![10, 40, -1, 55]);
-        let j = joint_repeat_region(&r1, &r2, true).unwrap();
+        let j = joint_repeat_region(&r1, &r2).unwrap();
         assert_eq!((j.sequence_start, j.repeat_length), (100, 90));
-        assert_eq!(j.sequence, [vec![b'a'; 30], vec![b'b'; 60]].concat());
+        assert_eq!(j.sequence, [vec![b'a'; 50], vec![b'b'; 40]].concat());
         // r2's split at 10 lies in the overlap and is dropped. Its splits at
         // 40 and 55 are positions 70 and 85 of the joint region, and the
         // removed split stays -1. Upstream 1.2.2 keeps 40 and 55.
@@ -2195,7 +1904,7 @@ mod tests {
         let r1 = plain_region(100, 80, b'a', 10.0, vec![25, 60]);
         for (start, len) in [(100, 30), (120, 30), (150, 30)] {
             let r2 = plain_region(start, len, b'b', 20.0, vec![5]);
-            let j = joint_repeat_region(&r1, &r2, true).unwrap();
+            let j = joint_repeat_region(&r1, &r2).unwrap();
             assert_eq!((j.sequence_start, j.repeat_length), (100, 80));
             assert_eq!(j.sequence, r1.sequence);
             assert_eq!(j.traceback, r1.traceback);
@@ -2207,12 +1916,9 @@ mod tests {
     }
 
     #[test]
-    fn no_split_matches_cpp() {
-        let (out, written) = run(T2, 500, 150, 10, 3, 3, false);
-        assert_eq!(
-            (out.len(), fnv1a(out.as_bytes())),
-            (18568, 0x3652a6ae83f8fc78)
-        );
+    fn no_split_leaves_splits_and_consensi_unset() {
+        let written = run(T2, 500, 150, 10, 3, 3, false);
+        assert!(!written.is_empty());
         assert!(written
             .iter()
             .all(|r| r.splits.is_none() && r.consensi.is_none()));
@@ -2255,7 +1961,7 @@ mod tests {
         assert!(!repeats_overlap(&a, &b, true));
         assert!(repeats_overlap(&a, &b, false));
         b.sequence_start = 151;
-        assert!(joint_repeat_region(&a, &b, true).is_none());
+        assert!(joint_repeat_region(&a, &b).is_none());
         b.sequence_id = 2;
         b.sequence_start = 120;
         assert!(!repeats_overlap(&a, &b, false));
@@ -2268,7 +1974,7 @@ mod tests {
         a.consensi = Some(vec![b"ACG".to_vec()]);
         b.splits = Some(vec![]);
         b.consensi = Some(vec![b"ACGT".to_vec()]);
-        let j = joint_repeat_region(&a, &b, true).unwrap();
+        let j = joint_repeat_region(&a, &b).unwrap();
         assert_eq!((j.repeat_length, j.repeat_period), (70, 3));
         assert!(j.splits.is_none() && j.consensi.is_none());
     }

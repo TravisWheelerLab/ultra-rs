@@ -1,0 +1,33 @@
+command: ultra in.fa -t 1 --hs --win_size 1000 --overlap 200 -p 10 --windows 16 -o out.txt
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 10
+Number of model states: 82
+Total sequence window size: 1400
+DP matrix cells: 44964
+Threads: 1
+Sequence window queue length: 16
+Total size: (202256 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.1382 (1353 / 9791)
+==== stderr ====
+==== file out.txt ====
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+80_AT	844	873	4	5.000734	ATTC	1	0	ATTC
+80_AT	872	938	8	6.804274	AATTATAT	1	0	AATTATAT
+80_AT	1023	1067	6	8.036777	AAAATT	1	0	AAAATT
+80_AT	2248	2291	2	7.514964	AT	1	0	AT
+80_AT	3070	3100	1	5.486879	T	1	0	T
+80_AT	3318	3364	8	4.867462	AATCAATT	1	0	AATCAATT
+80_AT	3926	3965	9	7.767880	ATATTATTT	1	0	ATATTATTT
+80_AT	4356	4400	10	10.123519	AAAATTATAT	1	0	AAAATTATAT
+80_AT	4404	4535	5	160.703629	AAAGC	1	0	AAAGC
+80_AT	4557	4590	3	6.367279	AAT	1	0	AAT
+80_AT	4638	4669	4	4.892075	ATAT	1	0	ATAT
+80_AT	4938	5000	6	12.667114	AAATAC	2	0,31	**ATAA,**C*AA
+80_AT	7972	8000	5	5.984789	AAATT	1	0	AAATT
+80_AT	8406	9134	7	954.684937	AAAATAC	1	0	AAAATAC

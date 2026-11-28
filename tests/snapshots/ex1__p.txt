@@ -1,0 +1,5 @@
+command: ultra in.fa -p
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: --period: 1 required UINT missing

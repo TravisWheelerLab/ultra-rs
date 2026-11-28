@@ -1,0 +1,156 @@
+command: ultra in.fa -t 1 --hs --win_size 2000 --overlap 300 -p 20 --json --show_seq -o out.json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 20
+Number of model states: 290
+Total sequence window size: 2600
+DP matrix cells: 135780
+Threads: 1
+Sequence window queue length: 1024
+Total size: (3205520 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.2161 (2102 / 9726)
+==== stderr ====
+==== file out.json ====
+{"Repeats": [
+{"SequenceName": "crlf record with windows line endings",
+"Start": 12,
+"Length": 32,
+"Period": 3,
+"Score": 30.068268,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCA"},
+
+{"SequenceName": "crlf record with windows line endings",
+"Start": 63,
+"Length": 32,
+"Period": 3,
+"Score": 30.068270,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCA"},
+
+{"SequenceName": "crlf record with windows line endings",
+"Start": 114,
+"Length": 32,
+"Period": 3,
+"Score": 30.068268,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCA"},
+
+{"SequenceName": "crlf record with windows line endings",
+"Start": 165,
+"Length": 32,
+"Period": 3,
+"Score": 30.068268,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCA"},
+
+{"SequenceName": "crlf record with windows line endings",
+"Start": 216,
+"Length": 32,
+"Period": 3,
+"Score": 30.068268,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCA"},
+
+{"SequenceName": "crlf record with windows line endings",
+"Start": 267,
+"Length": 39,
+"Period": 3,
+"Score": 30.383636,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTACGGA"},
+
+{"SequenceName": "blank lines and comments",
+"Start": 0,
+"Length": 49,
+"Period": 7,
+"Score": 46.672150,
+"Consensus": "ACAGATT",
+"Sequence": "GATTACAGATTACAGATTACAGATTACAGATTACAGATTACAGATTACA"},
+
+{"SequenceName": "blank lines and comments",
+"Start": 49,
+"Length": 48,
+"Period": 6,
+"Score": 55.323975,
+"Consensus": "AGGGTT",
+"Sequence": "TTAGGGTTAGGGTTAGGGTTAGGGTTAGGGTTAGGGTTAGGGTTAGGG"},
+
+{"SequenceName": "dup",
+"Start": 0,
+"Length": 58,
+"Period": 2,
+"Score": 68.600380,
+"Consensus": "AT",
+"Sequence": "ATATATATATATATATATATATATATATATATATCGCGCGCGCGCGCGCGCGCGCGCG",
+"SubRepeats": [{"Start": 0,
+"Consensus": "AT"},
+{"Start": 34,
+"Consensus": "CG"}]},
+
+{"SequenceName": "dup",
+"Start": 0,
+"Length": 59,
+"Period": 1,
+"Score": 74.106461,
+"Consensus": "A",
+"Sequence": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACCCCCCCCCCCCCCCCCCCCCCC",
+"SubRepeats": [{"Start": 0,
+"Consensus": "A"},
+{"Start": 36,
+"Consensus": "C"}]},
+
+{"SequenceName": "iupac and junk",
+"Start": 15,
+"Length": 24,
+"Period": 4,
+"Score": 5.806100,
+"Consensus": "ACGT",
+"Sequence": "ACGTACGTNNNNACGTACGTACGT"},
+
+{"SequenceName": "iupac and junk",
+"Start": 39,
+"Length": 55,
+"Period": 3,
+"Score": 41.793121,
+"Consensus": "AGC",
+"Sequence": "CAGCAGCAGNNNNNNNNNNCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAG"},
+
+{"SequenceName": "iupac and junk",
+"Start": 93,
+"Length": 56,
+"Period": 2,
+"Score": 61.118362,
+"Consensus": "GT",
+"Sequence": "GTGTGTGTGTGTGTGTGTGTGTGTGNNNNNTGTGTGTGTGTGTGTGTGTGTGTGTG"},
+
+{"SequenceName": "one very long line",
+"Start": 2000,
+"Length": 601,
+"Period": 5,
+"Score": 794.689453,
+"Consensus": "AAGGC",
+"Sequence": "AAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCAAGGCA"},
+
+{"SequenceName": "one very long line",
+"Start": 5000,
+"Length": 900,
+"Period": 3,
+"Score": 1201.317383,
+"Consensus": "CTT",
+"Sequence": "TCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCTTCT"},
+
+{"SequenceName": "no trailing newline",
+"Start": 0,
+"Length": 54,
+"Period": 6,
+"Score": 63.420166,
+"Consensus": "CCGGGG",
+"Sequence": "GGGGCCGGGGCCGGGGCCGGGGCCGGGGCCGGGGCCGGGGCCGGGGCCGGGGCC"}]
+}
+\ no newline at end

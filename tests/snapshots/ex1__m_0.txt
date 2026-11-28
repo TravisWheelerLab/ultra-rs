@@ -1,0 +1,5 @@
+command: ultra in.fa -m 0
+status: 2
+==== stdout ====
+==== stderr ====
+--match must be > 0.0 and <= 1.0

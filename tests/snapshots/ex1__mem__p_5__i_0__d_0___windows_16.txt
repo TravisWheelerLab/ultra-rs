@@ -1,0 +1,15 @@
+command: ultra in.fa --mem -p 5 -i 0 -d 0 --windows 16
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 5
+Number of model states: 5
+Total sequence window size: 50010
+DP matrix cells: 600130
+Threads: 1
+Sequence window queue length: 16
+Total size: (3200680 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+==== stderr ====

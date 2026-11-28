@@ -1,0 +1,5 @@
+command: ultra in.fa --no_such_flag
+status: 2
+==== stdout ====
+==== stderr ====
+Unrecognized flag or argument: The following argument was not expected: --no_such_flag

@@ -1,0 +1,15 @@
+command: ultra in.fa --mem -p 500 -i 20 -d 20 -t 8
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 500
+Number of model states: 20040
+Total sequence window size: 51000
+DP matrix cells: 51652080
+Threads: 8
+Sequence window queue length: 1024
+Total size: 1.59 GB (1705090560 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+==== stderr ====

@@ -1,0 +1,19 @@
+command: ultra in.fa --cite
+status: 0
+==== stdout ====
+BibTeX: 
+@article{10.1093/bioadv/vbae149,
+    author = {Olson, Daniel R and Wheeler, Travis J},
+    title = {ULTRA-effective labeling of tandem repeats in genomic sequence},
+    journal = {Bioinformatics Advances},
+    volume = {4},
+    number = {1},
+    pages = {vbae149},
+    year = {2024},
+    month = {10},
+    issn = {2635-0041},
+    doi = {10.1093/bioadv/vbae149},
+    url = {https://doi.org/10.1093/bioadv/vbae149},
+    eprint = {https://academic.oup.com/bioinformaticsadvances/article-pdf/4/1/vbae149/60779841/vbae149.pdf},
+}
+==== stderr ====

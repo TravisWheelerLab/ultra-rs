@@ -1,0 +1,27 @@
+command: ultra in.fa --tune_file tune_file --tune_only --hs
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: #
+Number of model states: #
+Total sequence window size: #
+DP matrix cells: #
+Threads: #
+Sequence window queue length: #
+Total size: # GB (# bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+Performing parameter search...
+Coverage, False Discovery Rate, Parameters
+(#/#): #, #, -p #
+(#/#): #, #, -p #
+(#/#): #, #, -p #
+(#/#): #, #, -p #
+(#/#): #, #, -p #
+(#/#): #, #, -p # -m # --at #
+(#/#): #, #, -p # -m # --at #
+(#/#): #, #, -p # -m # --at # -i # -d #
+----------------------------
+<tune verdict>
+==== stderr ====

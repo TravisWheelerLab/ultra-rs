@@ -1,0 +1,88 @@
+command: ultra in.fa -t 1 --hs --win_size 2000 --overlap 300 -p 20 --json --show_seq -o out.json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 20
+Number of model states: 290
+Total sequence window size: 2600
+DP matrix cells: 135780
+Threads: 1
+Sequence window queue length: 1024
+Total size: (3205520 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.0600 (836 / 13934)
+==== stderr ====
+==== file out.json ====
+{"Repeats": [
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 1832,
+"Length": 168,
+"Period": 6,
+"Score": 141.766663,
+"Consensus": "CGGCGT",
+"Sequence": "GTCGGCGTCGGCGTCGGCGTCGGCGTCGGCGTCGGTGTAGGCCTCGGCGTCGGCGTCGGCGTCGGCGTCGGCGTCGGCTTCGGCGTCGGGTCGCGTCGGCGTCGGCGTCGGCGTCGGCTCGGCGACGGCGTCGGCGTCGGCTCGGCGTCGGCGTCGGCTTGGGATATC"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 2630,
+"Length": 26,
+"Period": 2,
+"Score": 19.912872,
+"Consensus": "CG",
+"Sequence": "GCGCGGGCGCGCCGCGCGCGCGCGCG"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 864,
+"Length": 78,
+"Period": 7,
+"Score": 73.331902,
+"Consensus": "ACCCGTT",
+"Sequence": "CCGTTACCCGTTACCCTTTACCCGTTCACCCGTTACCCGTTACCCGTTACCCGTTACCCGTTACCCGTTACCCGTTAC"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 1386,
+"Length": 20,
+"Period": 6,
+"Score": 9.124390,
+"Consensus": "ACTCAG",
+"Sequence": "CTCAGACTCAGACTCAGACT"},
+
+{"SequenceName": "seq1 synthetic sequence 1",
+"Start": 5273,
+"Length": 22,
+"Period": 6,
+"Score": 11.818417,
+"Consensus": "ATTTGT",
+"Sequence": "TCATTGTCATTTGTATTTGTAT"},
+
+{"SequenceName": "seq2 synthetic sequence 2",
+"Start": 3027,
+"Length": 331,
+"Period": 7,
+"Score": 351.943634,
+"Consensus": "AGGCCTC",
+"Sequence": "TGGCTGTTGGCTGTTGGCTGTTGGCTGTTGGCTGTGGCTGTTGGCTGTTGGCTGTTGGCTGTTTGCTTTGGCTGTTGGGTGTTGGCTGTTGGCTGTTGGCTGTTGGCTGTTGGCTGTTGGCTGTTGGCTGTTGGCTGTTGGCCGTTGGCTATTGGCTACCTCAGGCCTCACGCCTCAGGCCTCAGGCCTCAGGCCCAGGCCTCAGGCCTCAGGCCTCAGGCCTCAGGCCTCAGGCCTCAGGCATCAGGCCTCAGGCCTCAGGCCTCATGCCTCAGGCCTCAGGCCTCAGGCCTCAGGCCTCATGCCTCAGGCCTCAGGCTTCAGGCCTCAG",
+"SubRepeats": [{"Start": 0,
+"Consensus": "CTGTTGG"},
+{"Start": 158,
+"Consensus": "AGGCCTC"}]},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 843,
+"Length": 98,
+"Period": 3,
+"Score": 108.003929,
+"Consensus": "ACT",
+"Sequence": "CTACTACTACTACTACTACTACTACTCTACTACTACTACTACTACTATTACTACTACTACTACTACTACTACTACTACTACTACTACTACTACTACTA"},
+
+{"SequenceName": "seq3 synthetic sequence 3",
+"Start": 1067,
+"Length": 93,
+"Period": 3,
+"Score": 90.243256,
+"Consensus": "GTT",
+"Sequence": "TTATTGTTGTTGTTGTTGTTGTTGTTGCTTGTTGTTAGTTGTTGTTGTTGTTGTTGTTGTTGTTGTTGTTGTCGTTGTTGTTGTTGTTGTTGT"}]
+}
+\ no newline at end

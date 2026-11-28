@@ -1,0 +1,124 @@
+command: ultra in.fa -m 0.95 --json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa -m 0.95 --json",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": false,
+"json_out": true,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 10,
+"max_delete": 10,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.950000,
+"period_decay": 0.850000,
+"transition_nr": 0.010000,
+"transition_rn": 0.050000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+{"Repeats": [
+{"SequenceName": "80_AT",
+"Start": 368,
+"Length": 20,
+"Period": 4,
+"Score": 5.721692,
+"Consensus": "AATT"},
+
+{"SequenceName": "80_AT",
+"Start": 899,
+"Length": 15,
+"Period": 2,
+"Score": 8.443659,
+"Consensus": "AT"},
+
+{"SequenceName": "80_AT",
+"Start": 3932,
+"Length": 29,
+"Period": 14,
+"Score": 8.884811,
+"Consensus": "AAATTTATATTATT"},
+
+{"SequenceName": "80_AT",
+"Start": 4404,
+"Length": 131,
+"Period": 5,
+"Score": 215.510895,
+"Consensus": "AAAGC"},
+
+{"SequenceName": "80_AT",
+"Start": 5480,
+"Length": 23,
+"Period": 10,
+"Score": 6.242752,
+"Consensus": "AAAATTTATT"},
+
+{"SequenceName": "80_AT",
+"Start": 5661,
+"Length": 17,
+"Period": 2,
+"Score": 6.190460,
+"Consensus": "AT"},
+
+{"SequenceName": "80_AT",
+"Start": 7783,
+"Length": 19,
+"Period": 7,
+"Score": 5.156288,
+"Consensus": "AATTGTT"},
+
+{"SequenceName": "80_AT",
+"Start": 8411,
+"Length": 720,
+"Period": 7,
+"Score": 1265.744019,
+"Consensus": "AAAATAC"}]
+}----------------------------
+Annotation Coverage: 0.0995 (974 / 9791)
+==== stderr ====

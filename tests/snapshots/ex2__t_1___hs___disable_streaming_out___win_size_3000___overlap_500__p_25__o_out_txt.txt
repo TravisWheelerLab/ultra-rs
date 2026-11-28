@@ -1,0 +1,19 @@
+command: ultra in.fa -t 1 --hs --disable_streaming_out --win_size 3000 --overlap 500 -p 25 -o out.txt
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 25
+Number of model states: 395
+Total sequence window size: 4000
+DP matrix cells: 248790
+Threads: 1
+Sequence window queue length: 1024
+Total size: (5091160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.0000 (0 / 18000)
+==== stderr ====
+==== file out.txt ====
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi

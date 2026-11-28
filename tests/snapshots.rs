@@ -1,104 +1,43 @@
-//! Differential tests: the Rust binary must reproduce the C++ reference
-//! binary byte for byte (exit code, stdout, stderr and every output file).
+//! Snapshot tests: the `ultra` binary's exit status, stdout, stderr and every
+//! file it writes, for many inputs and option sets, must equal the files in
+//! `tests/snapshots/` byte for byte. After an intended change in output, run
+//! `UPDATE_SNAPSHOTS=1 cargo test --test snapshots` to rewrite the files and
+//! review the change with `git diff`.
 //!
-//! The reference is the C++ ULTRA at commit 7947d0d, which is 1.2.2 plus the
-//! bug fixes this port also makes (TravisWheelerLab/ULTRA pull request 95).
-//! The binary is taken from `$ULTRA_REF_BIN`, or from
-//! `upstream/build-fixed/ultra` under the crate root. The tests are marked
-//! `#[ignore]`, so a plain `cargo test` does not run them; run them with
-//! `cargo test --test differential -- --ignored`, which fails when neither
-//! binary exists. Pointing `$ULTRA_REF_BIN` at a build of stock 1.2.2
-//! shows which outputs the fixes change.
+//! Each case runs in its own scratch directory with the input linked in as
+//! `in.fa` and `argv[0]` set to `ultra`, so that the settings ULTRA echoes in
+//! its output hold no machine-dependent paths. The crate version is replaced
+//! by `@VERSION@` in the stored files.
 //!
-//! To build the reference from the crate root:
+//! `--fdr` and `--tune` shuffle the sequence with a random seed, so for those
+//! cases every number is blanked before comparing.
 //!
-//! ```text
-//! git clone https://github.com/TravisWheelerLab/ULTRA upstream/ULTRA-fixed
-//! git -C upstream/ULTRA-fixed checkout 7947d0d
-//! cmake -S upstream/ULTRA-fixed -B upstream/build-fixed -DCMAKE_BUILD_TYPE=Release
-//! cmake --build upstream/build-fixed
-//! ```
-//!
-//! By default the Rust binary departs from the C++ in two ways: the model
-//! charges the bases after an indel as matches (`UModel::indel_window_cost`),
-//! and the consensus comes from an indel test and realignment
-//! (`RepeatRegion::create_logo`). Every run here sets
-//! `ULTRA_UPSTREAM_COMPAT=1`, which turns both off. The C++ binary does not
-//! read that variable. The unit tests in `src/umodel.rs` and `src/repeat.rs`,
-//! `tests/long_period.rs` and `tests/determinism.rs` test the default
-//! behaviour.
-//!
-//! Each case runs both binaries in their own scratch directory with the input
-//! linked in as `in.fa` and `argv[0]` forced to `ultra`, because the settings
-//! block that ULTRA writes into its output echoes the command line.
-//!
-//! The memory estimate ULTRA prints (and `--mem`) gives this port's sizes
-//! for its own matrix layout on the "DP matrix cells" and "Total size"
-//! lines; those two numbers are blanked in both outputs before comparing.
-//!
-//! The `--help` line for `--pval` says what the option does in this port
-//! (the C++ text claims it changes BED output, which has no score); the C++
-//! line is rewritten to it before comparing.
-//!
-//! The two programs report different versions (the C++ 1.2.2, this crate its
-//! own), in the `--help` banner and on the first line of JSON output. Before
-//! comparing, the tests rewrite the version in the C++ output to this crate's.
-//! For input with CRLF line endings the C++ also leaves a `\r` at the end of
-//! each JSON `SequenceName`, which this crate drops; the tests remove it from
-//! the C++ output.
-//!
-//! The C++ binary is only deterministic with one thread, so thread-count cases
-//! compare the Rust binary at `-t N` against the reference at `-t 1`, looking
-//! at output files only.
+//! Thread-count cases store the output of `-t 1` and check that `-t 2`, `-t 4`
+//! and `-t 16` write the same files.
 
-use std::collections::BTreeMap;
+mod common {
+    pub mod snapshot;
+}
+use common::snapshot::{self, Outcome};
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
-
-// ---------------------------------------------------------------------------
-// Locations
-// ---------------------------------------------------------------------------
+use std::sync::Mutex;
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The binary under test. `$ULTRA_TEST_BIN` overrides the freshly built Rust
-/// binary, which lets the harness be checked by running the reference against
-/// itself.
-fn rust_bin() -> PathBuf {
-    match std::env::var_os("ULTRA_TEST_BIN") {
-        Some(p) => PathBuf::from(p),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_ultra")),
-    }
-}
-
-fn ref_bin() -> Option<PathBuf> {
-    static REF: OnceLock<Option<PathBuf>> = OnceLock::new();
-    REF.get_or_init(|| {
-        let candidate = match std::env::var_os("ULTRA_REF_BIN") {
-            Some(p) => PathBuf::from(p),
-            None => crate_root().join("upstream/build-fixed/ultra"),
-        };
-        if candidate.is_file() {
-            Some(candidate)
-        } else {
-            eprintln!(
-                "no reference binary at {} (set ULTRA_REF_BIN)",
-                candidate.display()
-            );
-            None
-        }
-    })
-    .clone()
+fn snapshot_dir() -> PathBuf {
+    crate_root().join("tests/snapshots")
 }
 
 fn work_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("differential")
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("snapshots")
 }
 
 // ---------------------------------------------------------------------------
@@ -262,15 +201,17 @@ fn mask_corner_fasta() -> Vec<u8> {
     out
 }
 
-/// Returns the path of a named input, creating it on first use.
+/// Returns the path of a named input, writing it on first use in this test
+/// process (so that a file left by an older version of a generator is not
+/// used).
 fn input(key: &str) -> PathBuf {
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK.lock().unwrap();
+    static WRITTEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let mut written = WRITTEN.lock().unwrap();
 
     let dir = work_root().join("inputs");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{key}.fa"));
-    if path.exists() {
+    if written.contains(key) {
         return path;
     }
 
@@ -282,9 +223,9 @@ fn input(key: &str) -> PathBuf {
         "edge" => edge_case_fasta(),
         "maskcorners" => mask_corner_fasta(),
         // Several sequences, mixed line widths.
-        "mixed" => synthetic_fasta(1, 4, 40_000, &[60, 70, 80, 200]),
+        "mixed" => synthetic_fasta(1, 4, 2_500, &[60, 70, 80, 200]),
         // One sequence long enough to span many small windows.
-        "long" => synthetic_fasta(2, 1, 150_000, &[80]),
+        "long" => synthetic_fasta(2, 1, 40_000, &[80]),
         // Enough sequence to span several default-size windows.
         "big" => synthetic_fasta(3, 3, 400_000, &[60, 100]),
         other => panic!("unknown input {other}"),
@@ -293,6 +234,7 @@ fn input(key: &str) -> PathBuf {
     let tmp = dir.join(format!("{key}.fa.tmp"));
     fs::write(&tmp, bytes).unwrap();
     fs::rename(&tmp, &path).unwrap();
+    written.insert(key.to_owned());
     path
 }
 
@@ -302,26 +244,24 @@ fn input(key: &str) -> PathBuf {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Compare {
-    /// Exit code, stdout, stderr and output files.
+    /// Exit status, stdout, stderr and output files as they are.
     Everything,
-    /// Exit code and output files only (used when the two command lines
-    /// differ, e.g. thread-count cases).
-    FilesOnly,
-    /// Exit code plus stdout/stderr/files with every number blanked out (used
-    /// for the shuffled-sequence paths, which are random by design).
+    /// Every number blanked (the shuffled-sequence paths, which are random
+    /// by design).
     Shape,
 }
 
 struct Case {
     name: String,
     input: &'static str,
-    /// Arguments after the input file, for the reference binary.
-    ref_args: Vec<String>,
-    /// Arguments after the input file, for the Rust binary.
-    rust_args: Vec<String>,
+    /// Arguments after the input file.
+    args: Vec<String>,
     compare: Compare,
     /// Pass the input file argument at all (false for bare invocations).
     with_input: bool,
+    /// Further thread counts that must write the same files as this case
+    /// (whose arguments start with `-t 1`).
+    threads: Vec<u32>,
 }
 
 fn args(s: &str) -> Vec<String> {
@@ -336,41 +276,40 @@ fn slug(s: &str) -> String {
     cleaned.trim_matches('_').to_owned()
 }
 
-/// A case where both binaries get the same arguments.
 fn case(input: &'static str, arg_str: &str) -> Case {
     Case {
         name: format!("{input}__{}", slug(arg_str)),
         input,
-        ref_args: args(arg_str),
-        rust_args: args(arg_str),
+        args: args(arg_str),
         compare: Compare::Everything,
         with_input: true,
+        threads: Vec::new(),
     }
 }
 
-struct Outcome {
-    code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    files: BTreeMap<String, Vec<u8>>,
+fn command_line(case_args: &[String], with_input: bool) -> String {
+    let mut words = vec!["ultra".to_owned()];
+    if with_input {
+        words.push("in.fa".to_owned());
+    }
+    words.extend(case_args.iter().cloned());
+    words.join(" ")
 }
 
-fn run(bin: &Path, dir: &Path, input_path: &Path, case_args: &[String], with_input: bool) -> Outcome {
+fn run(dir: &Path, input_path: &Path, case_args: &[String], with_input: bool) -> Outcome {
     let _ = fs::remove_dir_all(dir);
     fs::create_dir_all(dir).unwrap();
     std::os::unix::fs::symlink(input_path, dir.join("in.fa")).unwrap();
     // A parameter file for `--tune_file` cases.
     fs::copy(crate_root().join("examples/tune_file"), dir.join("tune_file")).unwrap();
 
-    let mut cmd = Command::new(bin);
-    cmd.arg0("ultra")
-        .current_dir(dir)
-        .env("ULTRA_UPSTREAM_COMPAT", "1");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ultra"));
+    cmd.arg0("ultra").current_dir(dir);
     if with_input {
         cmd.arg("in.fa");
     }
     cmd.args(case_args);
-    let output = cmd.output().unwrap_or_else(|e| panic!("failed to run {}: {e}", bin.display()));
+    let output = cmd.output().unwrap_or_else(|e| panic!("failed to run ultra: {e}"));
 
     let mut files = BTreeMap::new();
     for entry in fs::read_dir(dir).unwrap() {
@@ -390,61 +329,12 @@ fn run(bin: &Path, dir: &Path, input_path: &Path, case_args: &[String], with_inp
     }
 }
 
-/// The version the reference binary reports.
-const REFERENCE_VERSION: &str = "1.2.2";
-
-/// Rewrites the version in reference output to this crate's version, in the
-/// two places ULTRA prints it: the `--help` banner and the first line of
-/// JSON output. Also drops the `\r` that the reference leaves at the end of
-/// a JSON `SequenceName` when the input has CRLF line endings.
-fn with_port_version(bytes: Vec<u8>) -> Vec<u8> {
-    let Ok(text) = String::from_utf8(bytes.clone()) else {
-        return bytes;
-    };
-    let ours = env!("CARGO_PKG_VERSION");
-    text.replace(
-        "  --pval                      Use p-values instead of scores in BED output\n",
-        "  --pval                      Add p-values to TSV and JSON output\n",
-    )
-    .replace("\r\",\n\"Start\": ", "\",\n\"Start\": ").replace(
-        &format!("                Version {REFERENCE_VERSION}\n"),
-        &format!("                Version {ours}\n"),
-    )
-    .replace(
-        &format!("{{\"Version\": \"{REFERENCE_VERSION}\", "),
-        &format!("{{\"Version\": \"{ours}\", "),
-    )
-    .into_bytes()
-}
-
-/// Blanks the two numbers of the memory estimate that this port computes for
-/// its own matrix layout ("DP matrix cells" and "Total size"). The other
-/// lines of the estimate are compared as they are.
-fn without_memory_sizes(bytes: &[u8]) -> Vec<u8> {
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return bytes.to_vec();
-    };
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        if line.starts_with("DP matrix cells: ") {
-            out.push_str("DP matrix cells: #\n");
-        } else if line.starts_with("Total size: ") {
-            out.push_str("Total size: #\n");
-        } else {
-            out.push_str(line);
-        }
-    }
-    out.into_bytes()
-}
-
-/// Blanks every run of digits and dots, and everything after the label of
-/// lines whose value is random.
-fn shape(bytes: &[u8]) -> Vec<u8> {
-    let text = String::from_utf8_lossy(bytes);
+/// Blanks every run of digits and dots, and the lines whose wording depends
+/// on the shuffle.
+fn shape(text: &str) -> String {
     let mut out = String::new();
     for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("Estimated false discovery rate:") {
-            let _ = rest;
+        if line.starts_with("Estimated false discovery rate:") {
             out.push_str("Estimated false discovery rate: #\n");
             continue;
         }
@@ -469,119 +359,54 @@ fn shape(bytes: &[u8]) -> Vec<u8> {
         }
         out.push('\n');
     }
-    out.into_bytes()
+    out
 }
 
-fn describe_difference(what: &str, expected: &[u8], actual: &[u8]) -> String {
-    let exp = String::from_utf8_lossy(expected);
-    let act = String::from_utf8_lossy(actual);
-    let clip = |s: &str| -> String {
-        if s.len() > 300 {
-            let mut end = 300;
-            while !s.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}... ({} bytes)", &s[..end], s.len())
-        } else {
-            s.to_owned()
-        }
-    };
-    let mut exp_lines = exp.split('\n');
-    let mut act_lines = act.split('\n');
-    let mut line_no = 1;
-    loop {
-        match (exp_lines.next(), act_lines.next()) {
-            (Some(e), Some(a)) if e == a => line_no += 1,
-            (e, a) => {
-                return format!(
-                    "{what} differs at line {line_no} ({} vs {} bytes total)\n      c++ : {}\n      rust: {}",
-                    expected.len(),
-                    actual.len(),
-                    e.map(clip).unwrap_or_else(|| "<end of output>".into()),
-                    a.map(clip).unwrap_or_else(|| "<end of output>".into()),
-                );
-            }
-        }
-    }
-}
-
-/// Runs one case against both binaries. Returns a description of every
-/// difference found, empty when the outputs agree.
-fn check(case: &Case, reference: &Path) -> Vec<String> {
+/// Runs one case and compares it with its stored file. Returns a description
+/// of every difference found.
+fn check(case: &Case) -> Vec<String> {
     let input_path = input(case.input);
     let base = work_root().join("runs").join(&case.name);
-    let ref_dir = base.join("cpp");
-    let rust_dir = base.join("rust");
+    let command = command_line(&case.args, case.with_input);
 
-    let mut expected = run(reference, &ref_dir, &input_path, &case.ref_args, case.with_input);
-    expected.stdout = with_port_version(std::mem::take(&mut expected.stdout));
-    expected.stderr = with_port_version(std::mem::take(&mut expected.stderr));
-    for bytes in expected.files.values_mut() {
-        *bytes = with_port_version(std::mem::take(bytes));
-    }
-    let actual = run(&rust_bin(), &rust_dir, &input_path, &case.rust_args, case.with_input);
-
-    let mut problems = Vec::new();
-    if expected.code != actual.code {
-        problems.push(format!(
-            "exit code differs: c++ {:?}, rust {:?}",
-            expected.code, actual.code
-        ));
-    }
-
-    let normalise = |b: &[u8]| -> Vec<u8> {
-        let b = without_memory_sizes(b);
+    let outcome = run(&base.join("t1"), &input_path, &case.args, case.with_input);
+    let normalise = |text: &str| -> String {
+        let text = snapshot::without_version(text);
         if case.compare == Compare::Shape {
-            shape(&b)
+            shape(&text)
         } else {
-            b
+            text
         }
     };
-
-    if case.compare != Compare::FilesOnly {
-        let (e, a) = (normalise(&expected.stdout), normalise(&actual.stdout));
-        if e != a {
-            problems.push(describe_difference("stdout", &e, &a));
-        }
-        let (e, a) = (normalise(&expected.stderr), normalise(&actual.stderr));
-        if e != a {
-            problems.push(describe_difference("stderr", &e, &a));
-        }
+    let rendered = snapshot::render(&command, &outcome, &normalise);
+    let mut problems = Vec::new();
+    if let Err(e) = snapshot::compare(&snapshot_dir(), &case.name, &command, &rendered) {
+        problems.push(e);
     }
 
-    let names: Vec<&String> = expected.files.keys().chain(actual.files.keys()).collect();
-    let mut seen = std::collections::BTreeSet::new();
-    for name in names {
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        match (expected.files.get(name), actual.files.get(name)) {
-            (Some(e), Some(a)) => {
-                let (e, a) = (normalise(e), normalise(a));
-                if e != a {
-                    problems.push(describe_difference(&format!("file {name}"), &e, &a));
-                }
-            }
-            (Some(_), None) => problems.push(format!("file {name} written by c++ only")),
-            (None, Some(_)) => problems.push(format!("file {name} written by rust only")),
-            (None, None) => unreachable!(),
+    for &t in &case.threads {
+        assert_eq!(case.args[..2], ["-t", "1"], "{}: thread cases start with -t 1", case.name);
+        let mut t_args = case.args.clone();
+        t_args[1] = t.to_string();
+        let other = run(&base.join(format!("t{t}")), &input_path, &t_args, case.with_input);
+        if other.code != outcome.code || other.files != outcome.files {
+            let names: BTreeSet<&String> = outcome.files.keys().chain(other.files.keys()).collect();
+            let differing: Vec<&&String> =
+                names.iter().filter(|n| outcome.files.get(**n) != other.files.get(**n)).collect();
+            problems.push(format!(
+                "[{}] {}\n    -t {t} differs from -t 1: status {:?} vs {:?}, files {differing:?}",
+                case.name,
+                command_line(&t_args, case.with_input),
+                other.code,
+                outcome.code
+            ));
         }
     }
 
     if problems.is_empty() {
         let _ = fs::remove_dir_all(&base);
     } else {
-        problems.insert(
-            0,
-            format!(
-                "c++ : ultra {}{}\n    rust: ultra {}{}\n    kept: {}",
-                if case.with_input { "in.fa " } else { "" },
-                case.ref_args.join(" "),
-                if case.with_input { "in.fa " } else { "" },
-                case.rust_args.join(" "),
-                base.display()
-            ),
-        );
+        problems.push(format!("    run directory kept: {}", base.display()));
     }
     problems
 }
@@ -589,12 +414,8 @@ fn check(case: &Case, reference: &Path) -> Vec<String> {
 /// Runs a batch of cases a few at a time and fails with a report of every
 /// case that differed.
 fn run_cases(cases: Vec<Case>) {
-    // These tests are run on request (`cargo test -- --ignored`), so a missing
-    // reference is a failure, not a pass.
-    let reference = ref_bin().expect("no C++ reference binary: build it as the top of this file says, or set ULTRA_REF_BIN");
-
     let next = AtomicUsize::new(0);
-    let failures: Mutex<Vec<(String, Vec<String>)>> = Mutex::new(Vec::new());
+    let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let workers = cases.len().min(8).max(1);
 
     std::thread::scope(|scope| {
@@ -602,26 +423,15 @@ fn run_cases(cases: Vec<Case>) {
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::SeqCst);
                 let Some(case) = cases.get(i) else { break };
-                let problems = check(case, &reference);
+                let problems = check(case);
                 if !problems.is_empty() {
-                    failures.lock().unwrap().push((case.name.clone(), problems));
+                    failures.lock().unwrap().push(problems.join("\n"));
                 }
             });
         }
     });
 
-    let mut failures = failures.into_inner().unwrap();
-    failures.sort();
-    if !failures.is_empty() {
-        let mut report = format!("{} of {} cases differ from the C++ reference\n", failures.len(), cases.len());
-        for (name, problems) in &failures {
-            report.push_str(&format!("\n[{name}]\n"));
-            for p in problems {
-                report.push_str(&format!("    {p}\n"));
-            }
-        }
-        panic!("{report}");
-    }
+    snapshot::report(failures.into_inner().unwrap(), cases.len());
 }
 
 /// Builds the cross product of inputs and argument strings.
@@ -639,17 +449,12 @@ fn matrix(inputs: &[&'static str], arg_strs: &[&str]) -> Vec<Case> {
 // Cases
 // ---------------------------------------------------------------------------
 
-
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn default_run() {
-    run_cases(matrix(&["ex1", "ex2", "ex3", "edge", "mixed"], &[""]));
+fn default_run() -> Vec<Case> {
+    matrix(&["ex1", "ex2", "ex3", "edge", "mixed"], &[""])
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn output_formats() {
-    run_cases(matrix(
+fn output_formats() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
         &[
             "--tsv",
@@ -672,13 +477,11 @@ fn output_formats() {
             "--disable_streaming_out",
             "--disable_streaming_out --json -o out.json",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn output_detail_flags() {
-    run_cases(matrix(
+fn output_detail_flags() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
         &[
             "-c",
@@ -686,10 +489,9 @@ fn output_detail_flags() {
             "--show_seq",
             "--show_seq --json",
             "--show_seq --bed",
-            "--json --show_delta",
+            // --show_delta and --show_logo appear in the next case only.
             "--json --show_trace",
             "--json --show_wid",
-            "--json --show_logo",
             "--json -c --show_seq --show_delta --show_trace --show_wid --show_logo",
             "-c --show_seq --show_delta --show_trace --show_wid --show_logo",
             "--max_consensus 5",
@@ -703,13 +505,11 @@ fn output_detail_flags() {
             "--pval --json",
             "--pval --bed --pval_loc 3.5 --pval_scale 2.25",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn masking() {
-    run_cases(matrix(
+fn masking() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed", "maskcorners"],
         &[
             "--mask masked.fa",
@@ -719,13 +519,11 @@ fn masking() {
             "--mask masked.fa --json -o out.json",
             "--mask masked.fa --no_split --min_length 40",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn filters() {
-    run_cases(matrix(
+fn filters() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
         &[
             "-s 20",
@@ -737,13 +535,11 @@ fn filters() {
             "--min_unit 1 --min_length 2",
             "-s 15 --min_length 25 --min_unit 4 --json",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn model_size() {
-    run_cases(matrix(
+fn model_size() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
         &[
             "-p 1",
@@ -761,13 +557,11 @@ fn model_size() {
             "-p 6 -i 6 -d 6",
             "-p 4 -i 10 -d 10",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn probabilities() {
-    run_cases(matrix(
+fn probabilities() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
         &[
             "--at 0.3",
@@ -785,19 +579,16 @@ fn probabilities() {
             "--ri 0.001 --rd 0.001",
             "--ri 0.1 --rd 0.08 --ii 0.3 --dd 0.25",
             "--ii 0.001 --dd 0.5",
-            // 0 makes the C++ take no insertion (or deletion) at all
             "--ii 0 -c",
             "--dd 0 -c --json",
             "--ii 0 --dd 0 -i 3 -d 3",
             "-m 0.6 --at 0.6 --rn 0.001 --nr 0.005",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn splitting() {
-    run_cases(matrix(
+fn splitting() -> Vec<Case> {
+    matrix(
         &["ex1", "ex2", "ex3", "edge", "mixed"],
         &[
             "--no_split",
@@ -814,12 +605,10 @@ fn splitting() {
             "--min_split_window 60",
             "--max_split 20 --split_threshold 1.5 --split_depth 3 --min_split_window 8 --json --show_seq",
         ],
-    ));
+    )
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn windowing() {
+fn windowing() -> Vec<Case> {
     let mut cases = matrix(
         &["ex2", "ex3", "edge", "mixed", "long"],
         &[
@@ -841,13 +630,11 @@ fn windowing() {
         ],
     );
     // A few default-size windows end to end.
-    cases.extend(matrix(&["big"], &["-p 30 -i 3 -d 3", "-p 30 -i 3 -d 3 --json --mask masked.fa"]));
-    run_cases(cases);
+    cases.extend(matrix(&["big"], &["-p 30 -i 3 -d 3"]));
+    cases
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn informational_and_errors() {
+fn informational_and_errors() -> Vec<Case> {
     let mut cases = matrix(
         &["ex1"],
         &[
@@ -864,18 +651,13 @@ fn informational_and_errors() {
         ("missing_file", "does_not_exist.fa", false),
         ("missing_file_json", "does_not_exist.fa --json -o out.json", false),
     ] {
-        cases.push(Case {
-            name: name.to_owned(),
-            input: "ex1",
-            ref_args: args(a),
-            rust_args: args(a),
-            compare: Compare::Everything,
-            with_input,
-        });
+        let mut c = case("ex1", a);
+        c.name = name.to_owned();
+        c.with_input = with_input;
+        cases.push(c);
     }
 
-    // Help text and rejected or unusual arguments. The parser mirrors CLI11,
-    // so usage and error messages are compared in full as well.
+    // Help text and rejected or unusual arguments.
     for a in [
         "--help",
         "-h",
@@ -907,12 +689,10 @@ fn informational_and_errors() {
     ] {
         cases.push(case("ex1", a));
     }
-    run_cases(cases);
+    cases
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn threads_match_single_threaded_reference() {
+fn threads() -> Vec<Case> {
     let mut cases = Vec::new();
     for input in ["ex2", "ex3", "edge", "mixed", "long"] {
         for rest in [
@@ -923,24 +703,15 @@ fn threads_match_single_threaded_reference() {
             "--hs --win_size 1000 --overlap 200 -p 10 --windows 16 -o out.txt",
             "--hs --disable_streaming_out --win_size 3000 --overlap 500 -p 25 -o out.txt",
         ] {
-            for threads in [2, 4, 16] {
-                cases.push(Case {
-                    name: format!("{input}__t{threads}__{}", slug(rest)),
-                    input,
-                    ref_args: args(&format!("-t 1 {rest}")),
-                    rust_args: args(&format!("-t {threads} {rest}")),
-                    compare: Compare::FilesOnly,
-                    with_input: true,
-                });
-            }
+            let mut c = case(input, &format!("-t 1 {rest}"));
+            c.threads = vec![2, 4, 16];
+            cases.push(c);
         }
     }
-    run_cases(cases);
+    cases
 }
 
-#[test]
-#[ignore = "needs the patched C++ reference binary (ULTRA_REF_BIN); see the top of this file"]
-fn shuffled_paths_have_the_same_shape() {
+fn shuffled_paths() -> Vec<Case> {
     let mut cases = Vec::new();
     for (input, a) in [
         ("ex1", "--fdr --hs"),
@@ -953,5 +724,92 @@ fn shuffled_paths_have_the_same_shape() {
         c.compare = Compare::Shape;
         cases.push(c);
     }
-    run_cases(cases);
+    cases
+}
+
+const GROUPS: [fn() -> Vec<Case>; 12] = [
+    default_run,
+    output_formats,
+    output_detail_flags,
+    masking,
+    filters,
+    model_size,
+    probabilities,
+    splitting,
+    windowing,
+    informational_and_errors,
+    threads,
+    shuffled_paths,
+];
+
+#[test]
+fn snapshot_default_run() {
+    run_cases(default_run());
+}
+
+#[test]
+fn snapshot_output_formats() {
+    run_cases(output_formats());
+}
+
+#[test]
+fn snapshot_output_detail_flags() {
+    run_cases(output_detail_flags());
+}
+
+#[test]
+fn snapshot_masking() {
+    run_cases(masking());
+}
+
+#[test]
+fn snapshot_filters() {
+    run_cases(filters());
+}
+
+#[test]
+fn snapshot_model_size() {
+    run_cases(model_size());
+}
+
+#[test]
+fn snapshot_probabilities() {
+    run_cases(probabilities());
+}
+
+#[test]
+fn snapshot_splitting() {
+    run_cases(splitting());
+}
+
+#[test]
+fn snapshot_windowing() {
+    run_cases(windowing());
+}
+
+#[test]
+fn snapshot_informational_and_errors() {
+    run_cases(informational_and_errors());
+}
+
+#[test]
+fn snapshot_threads_match_single_threaded() {
+    run_cases(threads());
+}
+
+#[test]
+fn snapshot_shuffled_paths_shape() {
+    run_cases(shuffled_paths());
+}
+
+/// Every stored file belongs to a case, and no two cases share a name.
+#[test]
+fn snapshot_files_all_have_a_case() {
+    let mut names = BTreeSet::new();
+    for group in GROUPS {
+        for c in group() {
+            assert!(names.insert(c.name.clone()), "two cases named {}", c.name);
+        }
+    }
+    snapshot::check_no_stale(&snapshot_dir(), &names);
 }

@@ -136,11 +136,6 @@ pub fn to_string_f32(v: f32) -> String {
     fmt_f(v as f64, 6)
 }
 
-/// `std::to_string(double)`: `%f`.
-pub fn to_string_f64(v: f64) -> String {
-    fmt_f(v, 6)
-}
-
 /// Removes trailing zeros after a decimal point, and the point itself if
 /// nothing follows it (the `%g` rule without `#`).
 fn strip_fraction_zeros(s: &mut String) {
@@ -206,38 +201,6 @@ pub fn fmt_g(v: f64) -> String {
 /// and the word is skipped.
 pub fn sequence_id(name: &str) -> &str {
     name.split(|c: char| c.is_whitespace() || c == '\0').find(|w| !w.is_empty()).unwrap_or("")
-}
-
-/// The name the TSV and BED writers print: the sequence's id ([`sequence_id`]), as in
-/// BPAF. In compat mode, upstream's cleanup ([`clean_sequence_name`]), which cuts
-/// `gi|111|ref|A` to `gi`.
-pub(crate) fn table_sequence_name<'a>(settings: &crate::cli::Settings, name: &'a str) -> &'a str {
-    if settings.upstream_compat {
-        clean_sequence_name(name)
-    } else {
-        sequence_id(name)
-    }
-}
-
-/// Upstream's name cleanup for TSV/BED: the sequence name up to (not
-/// including) the first byte outside `[A-Za-z0-9-_.:*#]`.
-pub(crate) fn clean_sequence_name(name: &str) -> &str {
-    let b = name.as_bytes();
-    for (i, &c) in b.iter().enumerate() {
-        if c.is_ascii_alphanumeric()
-            || c == b'-'
-            || c == b'_'
-            || c == b'.'
-            || c == b':'
-            || c == b'*'
-            || c == b'#'
-        {
-            continue;
-        }
-        // Every earlier byte is ASCII, so `i` is a char boundary.
-        return &name[..i];
-    }
-    name
 }
 
 /// `s` as the contents of a JSON string: `"`, `\` and control characters are
@@ -314,12 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn name_cleanup() {
-        assert_eq!(clean_sequence_name("seq1 synthetic"), "seq1");
-        assert_eq!(clean_sequence_name("a-b_c.d:e*f#g"), "a-b_c.d:e*f#g");
-        assert_eq!(clean_sequence_name("crlf\r"), "crlf");
-        assert_eq!(clean_sequence_name("caf\u{e9}x"), "caf");
-        assert_eq!(clean_sequence_name(""), "");
+    fn json_escape_escapes_quotes_and_control_characters() {
         assert_eq!(json_escape("chr1 plain caf\u{e9}"), "chr1 plain caf\u{e9}");
         assert_eq!(
             json_escape("a\"b\\c\td\re\nf\u{1}g"),
