@@ -1,0 +1,5 @@
+command: ultra in.fa --acgt 0.3 0.2
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: --acgt: At least 4 required but received 2

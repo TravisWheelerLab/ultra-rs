@@ -1,0 +1,5 @@
+command: ultra in.fa --acgt 0.1 0.1 0.1 0.1
+status: 2
+==== stdout ====
+==== stderr ====
+--acgt arguments must sum to 1.0 ± 0.001

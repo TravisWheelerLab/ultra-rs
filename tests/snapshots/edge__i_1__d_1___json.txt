@@ -1,0 +1,160 @@
+command: ultra in.fa -i 1 -d 1 --json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 296
+Total sequence window size: 100200
+DP matrix cells: 20240992
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (183568768 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa -i 1 -d 1 --json",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": false,
+"json_out": true,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 1,
+"max_delete": 1,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.700000,
+"period_decay": 0.850000,
+"transition_nr": 0.010000,
+"transition_rn": 0.050000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+{"Repeats": [
+{"SequenceName": "crlf record with windows line endings",
+"Start": 0,
+"Length": 306,
+"Period": 51,
+"Score": 342.738770,
+"Consensus": "AACGTTGCAGGATCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTACGG"},
+
+{"SequenceName": "crlf record with windows line endings",
+"Start": 12,
+"Length": 32,
+"Period": 3,
+"Score": 30.019938,
+"Consensus": "AGC"},
+
+{"SequenceName": "blank lines and comments",
+"Start": 0,
+"Length": 49,
+"Period": 7,
+"Score": 46.623821,
+"Consensus": "ACAGATT"},
+
+{"SequenceName": "blank lines and comments",
+"Start": 49,
+"Length": 48,
+"Period": 6,
+"Score": 55.323971,
+"Consensus": "AGGGTT"},
+
+{"SequenceName": "dup",
+"Start": 0,
+"Length": 58,
+"Period": 2,
+"Score": 68.600380,
+"Consensus": "AT",
+"SubRepeats": [{"Start": 0,
+"Consensus": "AT"},
+{"Start": 34,
+"Consensus": "CG"}]},
+
+{"SequenceName": "dup",
+"Start": 0,
+"Length": 59,
+"Period": 1,
+"Score": 74.106461,
+"Consensus": "A",
+"SubRepeats": [{"Start": 0,
+"Consensus": "A"},
+{"Start": 36,
+"Consensus": "C"}]},
+
+{"SequenceName": "iupac and junk",
+"Start": 15,
+"Length": 24,
+"Period": 4,
+"Score": 5.757770,
+"Consensus": "ACGT"},
+
+{"SequenceName": "iupac and junk",
+"Start": 39,
+"Length": 55,
+"Period": 3,
+"Score": 41.744789,
+"Consensus": "AGC"},
+
+{"SequenceName": "iupac and junk",
+"Start": 93,
+"Length": 56,
+"Period": 2,
+"Score": 61.118362,
+"Consensus": "GT"},
+
+{"SequenceName": "one very long line",
+"Start": 2000,
+"Length": 601,
+"Period": 5,
+"Score": 794.641174,
+"Consensus": "AAGGC"},
+
+{"SequenceName": "one very long line",
+"Start": 5000,
+"Length": 900,
+"Period": 3,
+"Score": 1201.269043,
+"Consensus": "CTT"},
+
+{"SequenceName": "no trailing newline",
+"Start": 0,
+"Length": 54,
+"Period": 6,
+"Score": 63.420166,
+"Consensus": "CCGGGG"}]
+}----------------------------
+Annotation Coverage: 0.2271 (2209 / 9726)
+==== stderr ====

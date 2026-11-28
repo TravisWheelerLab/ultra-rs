@@ -1,0 +1,208 @@
+command: ultra in.fa -t 1 --hs --win_size 2000 --overlap 300 -p 20 --json --show_seq -o out.json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 20
+Number of model states: 290
+Total sequence window size: 2600
+DP matrix cells: 135780
+Threads: 1
+Sequence window queue length: 1024
+Total size: (3205520 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.0565 (2360 / 41752)
+==== stderr ====
+==== file out.json ====
+{"Repeats": [
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 3202,
+"Length": 33,
+"Period": 1,
+"Score": 6.511757,
+"Consensus": "C",
+"Sequence": "TTTTTATTCCCTTTGGGCAAAAACCCGGCCCCC",
+"SubRepeats": [{"Start": 0,
+"Consensus": "T"},
+{"Start": 15,
+"Consensus": "*"}]},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 5084,
+"Length": 79,
+"Period": 3,
+"Score": 75.508156,
+"Consensus": "ACG",
+"Sequence": "GACGACGACGACGACGACGATCGACGACGACGACGACGACGACGACGACTACGACGACGAGACGACGACGACGACGACG"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 6831,
+"Length": 21,
+"Period": 1,
+"Score": 12.778202,
+"Consensus": "A",
+"Sequence": "AAAAAAAAAAAAAAGAAAAAA"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 7150,
+"Length": 219,
+"Period": 20,
+"Score": 156.454620,
+"Consensus": "AAGGTATATTCCCACATCAT",
+"Sequence": "CCACATCTATAAGGTATATTCCCTCATCTATAAGGTATATTCCCACATCTATAAGGTATATTCCCACATCTATAAGGTATATTCCCACATCTATAAGGTATATTCCGAGATCTATAAGGTATATTCCCACATCTATAAGGTATATTCACACATCTATAGGTATATTCCCACATCCATAAGGTATATTCCCACATCTATAAGGTATATTCCCACATCTTA"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 8375,
+"Length": 58,
+"Period": 9,
+"Score": 47.226719,
+"Consensus": "ATCCGTGTT",
+"Sequence": "TGTTATCCGTGTTATCCGTGTTATCCGTGTTATCCGTGTGATCCGTGTTATCCGTATT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 12288,
+"Length": 36,
+"Period": 6,
+"Score": 13.870108,
+"Consensus": "AATCAC",
+"Sequence": "AATCACAAACACACTCTCAATCACAATCACAATCAC"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 15012,
+"Length": 135,
+"Period": 5,
+"Score": 127.010605,
+"Consensus": "ACATC",
+"Sequence": "CATCTCATCACATCACATCACATCACATCACATCACATCACATCACATACATGCACATCACATCACATCACCATCACATCACATCACATCACATCACATCACATCACACCACATCACATCACATCACATTACATT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 17714,
+"Length": 101,
+"Period": 9,
+"Score": 108.162453,
+"Consensus": "AACTACGGT",
+"Sequence": "GTAACTACGGTAACTACGGTAACTACGGTAACTACGGTAACTACGGTAACTACGGTAACTACGGTAACTACGGTAACTACGGTAACACGGTAACTACGGTA"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 17815,
+"Length": 91,
+"Period": 3,
+"Score": 84.841858,
+"Consensus": "CCT",
+"Sequence": "CTCCTCCTCCTCCGTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTCCTCCTCCTGCCTCCTACTCCTCCTCCTCCTC"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 18954,
+"Length": 114,
+"Period": 6,
+"Score": 119.227478,
+"Consensus": "ATGCTG",
+"Sequence": "GATGCTGATGCTGATGCTGATGCTGATGCTGATGTGATGTTGATGCTGATGCTGATGCTGATGCAGATGCTGATGCTGATGCTGATGCTGATGCTGATGCTGATGCTGATGCTG"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 21439,
+"Length": 170,
+"Period": 9,
+"Score": 149.598145,
+"Consensus": "ATGGTTGCT",
+"Sequence": "ATGGTTGCTATGGCTGCTATGGTTCAATGGTTGCTATGGTTGCTATGGTTGCTATGTTTGCTATGGTTGATATGGTTGCTATGGTTGCTATGGTTGCTATGGTTGCTATGGTTGCTTGGTTGCTATGGTTGCTATAGGTTGCTATTGGTTCTATGGTTGCTATGGTTGCT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 23916,
+"Length": 62,
+"Period": 5,
+"Score": 60.523514,
+"Consensus": "AAATG",
+"Sequence": "ATGAAATGAAATGAAATGAAATGAAATGAAATGAAATAGAAATGAAATGAAATGAAATGAAA"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 25629,
+"Length": 62,
+"Period": 2,
+"Score": 59.661118,
+"Consensus": "CT",
+"Sequence": "TCTCTCTCTCTCTCTCTCGTCTCTCTCTCTCTCTCAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+"SubRepeats": [{"Start": 0,
+"Consensus": "CT"},
+{"Start": 35,
+"Consensus": "AA"}]},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 27433,
+"Length": 93,
+"Period": 7,
+"Score": 93.571411,
+"Consensus": "AAGATCG",
+"Sequence": "TCGAAGATCGAAGATCGAAGATGGAAGATCGAAGATCGAAGATCGAAGATCGAAGATCGAAGAATCGAAGATCGAAGATCGAAGATCGAAGAT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 29310,
+"Length": 153,
+"Period": 9,
+"Score": 146.205109,
+"Consensus": "ATATATTTC",
+"Sequence": "ATTTCTTATATTTCATATATTTCATATATTTCGTATATTTCATATATTTCATATATTTCATATATTTCATACTATTTCTTATAGTCATATATTTCATATATTTCATATATTTCATATATCTCATATATTTCATATATTTCATATATTTCATAT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 31419,
+"Length": 216,
+"Period": 7,
+"Score": 213.699524,
+"Consensus": "ATGGGGT",
+"Sequence": "GGGTATGGGGTATGGGGTATGGGGTATGGTGTATGGGTATGGGGTATGGTGGTATGGGGTATGGGGTATGGGGTATGGGGTATGGGTATGGGATATGGGTATGGGGTATGGGGTATGGGGTATGGGGTATGGGGTATGGGGTTAGGGGTATCGGGTATGGGGTATGGGGTATGGGGTATGGGGTATGGGGTATGGGGTATGGGGTTATGGGGTATG"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 33856,
+"Length": 198,
+"Period": 6,
+"Score": 202.015808,
+"Consensus": "AAGCGT",
+"Sequence": "CGTAAGCGTAAGCGTAAGCGGAAGCGTAACGCGTAAGCGTAAGGGTAAAGCGCTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCGTAAGCTGGAGCTGG"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 35712,
+"Length": 127,
+"Period": 4,
+"Score": 109.056076,
+"Consensus": "ATGT",
+"Sequence": "TATGTATGTATGTATGTATGTATGTATGTATGTATGTATGTATGTATCTATATATGTATGTATGTATGTAAGTATGTATGTATGTTGTATGATTAATGTATCTATGTATGTGTGTATGTATGTACGT"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 35837,
+"Length": 55,
+"Period": 5,
+"Score": 49.513977,
+"Consensus": "CGTGG",
+"Sequence": "GTGGGGTGGCGTGGCGTGGCGTGGCGTGGCGTGGCATGGCGTGGCGTGGCGTGGC"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 39101,
+"Length": 105,
+"Period": 15,
+"Score": 75.953461,
+"Consensus": "AAAGTCCTATAATGC",
+"Sequence": "AATGCAAAGTCCTATAATGCACAGTCCTATAATGCAAAGTCCTATAATGCAAAGTCCTATAATGCAAGTCCATAATGCAAAGTCCTATAATGCAAAGTCCTATAA"},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 39206,
+"Length": 36,
+"Period": 2,
+"Score": 23.012764,
+"Consensus": "GG",
+"Sequence": "GGGGGGGGGGGGGGGGGGGGGGGGCTCCCACGCGCG",
+"SubRepeats": [{"Start": 0,
+"Consensus": "GG"},
+{"Start": 21,
+"Consensus": "CG"}]},
+
+{"SequenceName": "seq0 synthetic sequence 0",
+"Start": 41554,
+"Length": 198,
+"Period": 6,
+"Score": 232.462555,
+"Consensus": "CTTTTT",
+"Sequence": "TTTTTATTTTTCTTTTTCTTTTTCTTTTTCTTCTTCTTTTTCTTTTTCTTTTTCTTTTTCTATTTCTTTTTCTTTTTCTTTTTCTTTCTCTTTTTCTTTTTCTTTATCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTCTTTTTC"}]
+}
+\ no newline at end

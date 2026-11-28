@@ -1,0 +1,83 @@
+command: ultra in.fa -m 0.8
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa -m 0.8",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": true,
+"json_out": false,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 10,
+"max_delete": 10,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.800000,
+"period_decay": 0.850000,
+"transition_nr": 0.010000,
+"transition_rn": 0.050000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+crlf	0	306	51	391.671265	AACGTTGCAGGATCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTACGG	1	0	AACGTTGCAGGATCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTACGG
+crlf	12	44	3	35.413998	AGC	1	0	AGC
+blank	0	49	7	54.522232	ACAGATT	1	0	ACAGATT
+blank	49	97	6	63.222305	AGGGTT	1	0	AGGGTT
+dup	0	58	2	77.640572	AT	2	0,34	AT,CG
+dup	0	59	1	84.309547	A	2	0,36	A,C
+iupac	15	39	4	7.876867	ACGT	1	0	ACGT
+iupac	39	94	3	49.065269	AGC	1	0	AGC
+iupac	93	149	2	69.979904	GT	1	0	GT
+one	1994	2601	5	913.507507	AAGGC	1	0	AAGGC
+one	3851	3861	1	5.043152	G	1	0	G
+one	5000	5900	3	1373.869873	CTT	1	0	CTT
+one	8264	8278	4	5.881104	ATCG	1	0	ATCG
+no	0	54	6	72.474434	CCGGGG	1	0	CCGGGG
+----------------------------
+Annotation Coverage: 0.2302 (2239 / 9726)
+==== stderr ====

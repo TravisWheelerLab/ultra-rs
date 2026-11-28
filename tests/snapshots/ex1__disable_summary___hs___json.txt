@@ -1,0 +1,42 @@
+command: ultra in.fa --disable_summary --hs --json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Repeats": [
+{"SequenceName": "Rand_seq_1",
+"Start": 447,
+"Length": 145,
+"Period": 2,
+"Score": 175.659958,
+"Consensus": "AT",
+"SubRepeats": [{"Start": 0,
+"Consensus": "AT"},
+{"Start": 81,
+"Consensus": "CG"}]},
+
+{"SequenceName": "Rand_seq_1",
+"Start": 859,
+"Length": 61,
+"Period": 4,
+"Score": 49.481125,
+"Consensus": "AGGC"},
+
+{"SequenceName": "Rand_seq_1",
+"Start": 1104,
+"Length": 63,
+"Period": 3,
+"Score": 71.850235,
+"Consensus": "AGT"}]
+}
+\ no newline at end
+==== stderr ====

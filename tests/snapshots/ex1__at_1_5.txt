@@ -1,0 +1,5 @@
+command: ultra in.fa --at 1.5
+status: 2
+==== stdout ====
+==== stderr ====
+--at must be >= 0.0 and <= 1.0

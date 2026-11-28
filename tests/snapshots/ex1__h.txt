@@ -1,0 +1,109 @@
+command: ultra in.fa -h
+status: 0
+==== stdout ====
+
+=================================================
+(U)ltra (L)ocates (T)andemly (R)epetitive (A)reas
+     Daniel R. Olson and Travis J. Wheeler
+                 Version @VERSION@
+     Use '--cite' for citation instructions
+=================================================
+
+Usage: ultra [OPTIONS] [input_file]
+
+Positionals:
+  input_file TEXT             DNA FASTA input file
+
+Options:
+  -h,--help                   Print this help message and exit
+
+
+Input:
+  -r,--read_all               Read entire input file into memory (disables streaming input)
+
+
+Output:
+  -o,--out TEXT               Output file path
+  --disable_streaming_out     Disables streaming output; no output will be created until all analysis has been completed
+  -c,--show_counts            Output #copies, #substitutions, #insertions, #deletions
+  --pval                      Add p-values to TSV and JSON output
+  --pval_loc                  The exponential location used for converting scores to p-values.
+  --pval_scale                The exponential scale used for converting scores to p-values
+  --tsv                       Use TSV output format
+  --json                      Use JSON output format
+  --bed                       Use BED output format
+  --bpaf                      Use BPAF output format: each repeat aligned to its consensus (requires --out)
+  --max_consensus INT [1000000] 
+                              The maximum length of consensus pattern to include in output
+  --show_seq                  Output repetitive region
+  --show_delta                Show positional score deltas in JSON output
+  --show_trace                Show Viterbi trace in JSON output
+  --show_wid                  Show sequence window IDs in JSON output
+  --show_logo                 Show logo numbers in JSON output
+  --hs,--hide_settings        Do not output settings
+  --suppress                  Do not output BED or JSON annotation
+  --disable_summary           Disable summary statistics
+  --fdr                       Estimate the False Discovery rate (runtime will be twice as long)
+
+
+Masking:
+  --mask TEXT                 File path to save a masked FASTA
+  --nmask                     Use n masking instead of case masking
+
+
+System:
+  -t,--threads INT [1]        Number of threads to use
+  --win_size INT              Manually set sequence window size
+  --overlap INT               Manually set sequence window overlap size
+  --windows INT [1024]        Number of sequence windows to store at once
+  --mem                       Display memory requirements for current settings and exit
+
+
+Filter:
+  -s,--score FLOAT [-100.0]   Minimum reportable repeat score
+  --min_length UINT [10]      Minimum reportable repeat length
+  --min_unit UINT [2]         Minimum reportable number of repeat units
+
+
+Parameter Tuning:
+  --tune                      Tune parameters using a small search grid before running (see README)
+  --tune_medium               Tune parameters before running (see README)
+  --tune_large                Tune parameters using a larger search grid before running (see README)
+  --tune_file TEXT            Use custom parameter search during tuning (see README)
+  --tune_indel                Enable indels while tuning
+  --tune_fdr FLOAT [0.05]     FDR to be tuned against (see README)
+  --tune_only                 Tune parameters and don't run (see README)
+
+
+Model:
+  -p,--period UINT [100]      Maximum detectable repeat period
+  -i,--inserts UINT [10]      Maximum number of insertion states
+  -d,--deletes UINT [10]      Maximum number of deletion states
+
+
+Probabilities:
+  --at FLOAT [0.5]            Expected AT content
+  --acgt FLOAT x 4            Expected frequency of A C G T
+  -m,--match FLOAT [0.7]      Expected conservation in repeats
+  --decay FLOAT [0.85]        Decay penalty applied to repetitive states
+  --nr FLOAT [0.01]           Probability of a repeat starting
+  --rn FLOAT [0.05]           Probability of a repeat stopping
+  --ri FLOAT [0.02]           Probability of an insertion occurring
+  --rd FLOAT [0.02]           Probability of a deletion occurring
+  --ii FLOAT [0.02]           Probability of consecutive insertions occurring
+  --dd FLOAT [0.02]           Probability of consecutive deletions occurring
+
+
+Splitting and Naming:
+  --no_split                  Do not perform repeat splitting
+  --max_split INT [10]        The maximum repeat period to perform repeat splitting
+  --split_threshold FLOAT [3.5] 
+                              Split threshold value
+  --split_depth UINT [5]      Number of repeat units to use in repeat splitting
+  --min_split_window UINT [15] 
+                              Minimum repeat split window size
+
+For additional information see README
+Supported by: NIH NIGMS P20GM103546 and NIH NHGRI U24HG010136
+
+==== stderr ====

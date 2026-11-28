@@ -1,0 +1,22 @@
+command: ultra in.fa -t 1 --hs --win_size 2000 --overlap 300 -p 20 --json --show_seq -o out.json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 20
+Number of model states: 290
+Total sequence window size: 2600
+DP matrix cells: 135780
+Threads: 1
+Sequence window queue length: 1024
+Total size: (3205520 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.0000 (0 / 18000)
+==== stderr ====
+==== file out.json ====
+{"Repeats": [
+]
+}
+\ no newline at end

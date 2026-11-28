@@ -1,0 +1,15 @@
+command: ultra in.fa --mem --win_size 5000 --overlap 500
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 6000
+DP matrix cells: 1275940
+Threads: 1
+Sequence window queue length: 1024
+Total size: (11247760 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+==== stderr ====

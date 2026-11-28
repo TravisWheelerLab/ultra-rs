@@ -1,0 +1,112 @@
+command: ultra in.fa --hs --json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Repeats": [
+{"SequenceName": "80_AT",
+"Start": 49,
+"Length": 126,
+"Period": 16,
+"Score": 7.345970,
+"Consensus": "AATATTCTTAATATTT"},
+
+{"SequenceName": "80_AT",
+"Start": 872,
+"Length": 66,
+"Period": 8,
+"Score": 6.540065,
+"Consensus": "AATTATAT"},
+
+{"SequenceName": "80_AT",
+"Start": 1023,
+"Length": 44,
+"Period": 6,
+"Score": 7.772570,
+"Consensus": "AAAATT"},
+
+{"SequenceName": "80_AT",
+"Start": 2248,
+"Length": 43,
+"Period": 2,
+"Score": 7.250463,
+"Consensus": "AT"},
+
+{"SequenceName": "80_AT",
+"Start": 3070,
+"Length": 30,
+"Period": 1,
+"Score": 5.222660,
+"Consensus": "T"},
+
+{"SequenceName": "80_AT",
+"Start": 3870,
+"Length": 95,
+"Period": 15,
+"Score": 10.664852,
+"Consensus": "AAATTTATATATATT"},
+
+{"SequenceName": "80_AT",
+"Start": 4356,
+"Length": 44,
+"Period": 10,
+"Score": 9.859287,
+"Consensus": "AAAATTATAT"},
+
+{"SequenceName": "80_AT",
+"Start": 4404,
+"Length": 131,
+"Period": 5,
+"Score": 160.439423,
+"Consensus": "AAAGC"},
+
+{"SequenceName": "80_AT",
+"Start": 4557,
+"Length": 33,
+"Period": 3,
+"Score": 6.103081,
+"Consensus": "AAT"},
+
+{"SequenceName": "80_AT",
+"Start": 4938,
+"Length": 61,
+"Period": 6,
+"Score": 5.657005,
+"Consensus": "AAAAAT",
+"SubRepeats": [{"Start": 0,
+"Consensus": "**ATAA"},
+{"Start": 31,
+"Consensus": "**C*AA"}]},
+
+{"SequenceName": "80_AT",
+"Start": 5413,
+"Length": 100,
+"Period": 13,
+"Score": 10.913597,
+"Consensus": "AAAATTAATAATT"},
+
+{"SequenceName": "80_AT",
+"Start": 7848,
+"Length": 59,
+"Period": 17,
+"Score": 7.783516,
+"Consensus": "AAATAGTGTTTAATACT"},
+
+{"SequenceName": "80_AT",
+"Start": 8406,
+"Length": 728,
+"Period": 7,
+"Score": 954.420837,
+"Consensus": "AAAATAC"}]
+}----------------------------
+Annotation Coverage: 0.1593 (1560 / 9791)
+==== stderr ====

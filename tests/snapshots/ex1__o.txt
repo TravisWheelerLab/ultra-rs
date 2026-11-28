@@ -1,0 +1,5 @@
+command: ultra in.fa -o
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: --out: 1 required TEXT missing

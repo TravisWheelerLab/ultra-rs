@@ -1,0 +1,5 @@
+command: ultra in.fa --mask
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: --mask: 1 required TEXT missing

@@ -1,0 +1,31 @@
+command: ultra in.fa --hs --bed -o out.bed
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.1593 (1560 / 9791)
+==== stderr ====
+==== file out.bed ====
+80_AT	49	175	AATATTCTTAATATTT
+80_AT	872	938	AATTATAT
+80_AT	1023	1067	AAAATT
+80_AT	2248	2291	AT
+80_AT	3070	3100	T
+80_AT	3870	3965	AAATTTATATATATT
+80_AT	4356	4400	AAAATTATAT
+80_AT	4404	4535	AAAGC
+80_AT	4557	4590	AAT
+80_AT	4938	4999	AAAAAT
+80_AT	5413	5513	AAAATTAATAATT
+80_AT	7848	7907	AAATAGTGTTTAATACT
+80_AT	8406	9134	AAAATAC

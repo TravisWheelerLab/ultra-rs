@@ -1,0 +1,144 @@
+command: ultra in.fa -t 1 --hs --win_size 2000 --overlap 300 -p 20 --json --show_seq -o out.json
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 20
+Number of model states: 290
+Total sequence window size: 2600
+DP matrix cells: 135780
+Threads: 1
+Sequence window queue length: 1024
+Total size: (3205520 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.1669 (1634 / 9791)
+==== stderr ====
+==== file out.json ====
+{"Repeats": [
+{"SequenceName": "80_AT",
+"Start": 49,
+"Length": 126,
+"Period": 16,
+"Score": 7.394301,
+"Consensus": "AATATTCTTAATATTT",
+"Sequence": "TTTTTAAATTATATTATTTTTTATTCTTATTAAAATTTACTATTAATAATTAAGATTATTGCTTTGTAATAAATTTCTTATTCACACTTTTTCATATTAAGTTACTTGATAGATAATTAACTTGAT"},
+
+{"SequenceName": "80_AT",
+"Start": 872,
+"Length": 66,
+"Period": 8,
+"Score": 6.588401,
+"Consensus": "AATTATAT",
+"Sequence": "TAAAAACATACAATTATACAAATGAGCATATAATATATATATTTATCTAATATATTTAACTTTTTA"},
+
+{"SequenceName": "80_AT",
+"Start": 1023,
+"Length": 44,
+"Period": 6,
+"Score": 7.820900,
+"Consensus": "AAAATT",
+"Sequence": "AAAATTAAAATTATTAAAAATAAGGATAATTTTAAATTTCAATT"},
+
+{"SequenceName": "80_AT",
+"Start": 2248,
+"Length": 43,
+"Period": 2,
+"Score": 7.299105,
+"Consensus": "AT",
+"Sequence": "TATATATTATAAAATTTTTTACAGACTTTTTCTCTATAAAAAA"},
+
+{"SequenceName": "80_AT",
+"Start": 3070,
+"Length": 30,
+"Period": 1,
+"Score": 5.271013,
+"Consensus": "T",
+"Sequence": "TTTTCCCTTTTTAATTTCTAGAAAAAAAAA"},
+
+{"SequenceName": "80_AT",
+"Start": 3318,
+"Length": 46,
+"Period": 8,
+"Score": 4.651262,
+"Consensus": "AATCAATT",
+"Sequence": "AATTATAAAATTTAAAATAAACCAATTAAGCACATAATCACGTTAT"},
+
+{"SequenceName": "80_AT",
+"Start": 3870,
+"Length": 95,
+"Period": 15,
+"Score": 10.713949,
+"Consensus": "AAATTTATATATATT",
+"Sequence": "TATATGTAAGTAACCTAAATGAATCTAATCTAAACTTAGCTAATTTCTATGTAAGTTTAAAGTTATTAAATTTATATTATTAAAATTATATAAAT"},
+
+{"SequenceName": "80_AT",
+"Start": 4356,
+"Length": 44,
+"Period": 10,
+"Score": 9.907643,
+"Consensus": "AAAATTATAT",
+"Sequence": "ATAAATTTTTATAAAATTAAATAAAATAATTTTAACAAATTTTA"},
+
+{"SequenceName": "80_AT",
+"Start": 4404,
+"Length": 131,
+"Period": 5,
+"Score": 160.487747,
+"Consensus": "AAAGC",
+"Sequence": "AAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCAAAGCA"},
+
+{"SequenceName": "80_AT",
+"Start": 4557,
+"Length": 33,
+"Period": 3,
+"Score": 6.151413,
+"Consensus": "AAT",
+"Sequence": "AAAAAATAATTAAAAAAATAATATTCTTTGTTG"},
+
+{"SequenceName": "80_AT",
+"Start": 4938,
+"Length": 61,
+"Period": 6,
+"Score": 5.707825,
+"Consensus": "AAAAAT",
+"Sequence": "ATAAATATTAAAAGAATAATGATAATTATAAATACTATACTAAAACAATGTCAAAATAAAA",
+"SubRepeats": [{"Start": 0,
+"Consensus": "**ATAA"},
+{"Start": 31,
+"Consensus": "**C*AA"}]},
+
+{"SequenceName": "80_AT",
+"Start": 5413,
+"Length": 100,
+"Period": 13,
+"Score": 10.966125,
+"Consensus": "AAAATTAATAATT",
+"Sequence": "ATTTTAATATGTCATTATTAATATTTAAATATTATCTTGAAAATACCACTTAAAAATATCTATAATTAATTTATTAAAATTGATTAAAATAATTGCTAAA"},
+
+{"SequenceName": "80_AT",
+"Start": 7848,
+"Length": 59,
+"Period": 17,
+"Score": 7.831865,
+"Consensus": "AAATAGTGTTTAATACT",
+"Sequence": "AGTGTAATGTCATAAATAGCGTAAAATAGTAATAAGTGTTTAATACTAAATAGTGTTTA"},
+
+{"SequenceName": "80_AT",
+"Start": 7972,
+"Length": 28,
+"Period": 5,
+"Score": 5.984095,
+"Consensus": "AAATT",
+"Sequence": "AAATAAATTAAAGTAAATTTTCATGTTA"},
+
+{"SequenceName": "80_AT",
+"Start": 8406,
+"Length": 728,
+"Period": 7,
+"Score": 954.469116,
+"Consensus": "AAAATAC",
+"Sequence": "ATAGGAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACAAAATACCAA"}]
+}
+\ no newline at end

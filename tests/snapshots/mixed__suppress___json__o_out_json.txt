@@ -1,0 +1,5 @@
+command: ultra in.fa --suppress --json -o out.json
+status: 2
+==== stdout ====
+==== stderr ====
+--suppress is incompatible with --tsv, --json, and --bed

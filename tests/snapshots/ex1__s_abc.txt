@@ -1,0 +1,5 @@
+command: ultra in.fa -s abc
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: Could not convert: --score = abc

@@ -1,0 +1,6 @@
+command: ultra in.fa --win_size 10 --overlap 100
+status: 2
+==== stdout ====
+==== stderr ====
+--win_size cannot be smaller than --period
+--overlap cannot be larger than --win_size

@@ -1,0 +1,31 @@
+command: ultra in.fa -t 1 --hs -o out.txt
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+----------------------------
+Annotation Coverage: 0.2271 (2209 / 9726)
+==== stderr ====
+==== file out.txt ====
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+crlf	0	306	51	342.738770	AACGTTGCAGGATCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTACGG	1	0	AACGTTGCAGGATCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTACGG
+crlf	12	44	3	30.019938	AGC	1	0	AGC
+blank	0	49	7	46.623821	ACAGATT	1	0	ACAGATT
+blank	49	97	6	55.323971	AGGGTT	1	0	AGGGTT
+dup	0	58	2	68.600380	AT	2	0,34	AT,CG
+dup	0	59	1	74.106461	A	2	0,36	A,C
+iupac	15	39	4	5.757770	ACGT	1	0	ACGT
+iupac	39	94	3	41.744789	AGC	1	0	AGC
+iupac	93	149	2	61.118362	GT	1	0	GT
+one	2000	2601	5	794.641174	AAGGC	1	0	AAGGC
+one	5000	5900	3	1201.269043	CTT	1	0	CTT
+no	0	54	6	63.420166	CCGGGG	1	0	CCGGGG

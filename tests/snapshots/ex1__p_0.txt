@@ -1,0 +1,5 @@
+command: ultra in.fa -p 0
+status: 2
+==== stdout ====
+==== stderr ====
+--period must be at least 1

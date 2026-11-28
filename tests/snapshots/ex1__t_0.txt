@@ -1,0 +1,5 @@
+command: ultra in.fa -t 0
+status: 2
+==== stdout ====
+==== stderr ====
+--threads must be at least 1.

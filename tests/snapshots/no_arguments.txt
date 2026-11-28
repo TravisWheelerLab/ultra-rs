@@ -1,0 +1,5 @@
+command: ultra
+status: 2
+==== stdout ====
+==== stderr ====
+Input file required.

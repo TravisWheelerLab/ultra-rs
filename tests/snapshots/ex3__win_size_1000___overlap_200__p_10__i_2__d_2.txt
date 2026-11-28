@@ -1,0 +1,83 @@
+command: ultra in.fa --win_size 1000 --overlap 200 -p 10 -i 2 -d 2
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 10
+Number of model states: 40
+Total sequence window size: 1400
+DP matrix cells: 30880
+Threads: 1
+Sequence window queue length: 1024
+Total size: (1557120 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa --win_size 1000 --overlap 200 -p 10 -i 2 -d 2",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": true,
+"json_out": false,
+"bed_out": false,
+"max_consensus_period": 1000000,
+"show_seq": false,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 1000,
+"overlap": 200,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 10,
+"max_insert": 2,
+"max_delete": 2,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.700000,
+"period_decay": 0.850000,
+"transition_nr": 0.010000,
+"transition_rn": 0.050000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+SeqID	Start	End	Period	Score	Consensus	#Subrepeats	SubrepeatStarts	SubrepeatConsensi
+80_AT	844	873	4	5.000734	ATTC	1	0	ATTC
+80_AT	872	938	8	6.804274	AATTATAT	1	0	AATTATAT
+80_AT	1023	1067	6	8.036777	AAAATT	1	0	AAAATT
+80_AT	2248	2291	2	7.514964	AT	1	0	AT
+80_AT	3070	3100	1	5.486879	T	1	0	T
+80_AT	3318	3364	8	4.867462	AATCAATT	1	0	AATCAATT
+80_AT	3926	3965	9	7.767880	ATATTATTT	1	0	ATATTATTT
+80_AT	4356	4400	10	10.123519	AAAATTATAT	1	0	AAAATTATAT
+80_AT	4404	4535	5	160.703629	AAAGC	1	0	AAAGC
+80_AT	4557	4590	3	6.367279	AAT	1	0	AAT
+80_AT	4638	4669	4	4.892075	ATAT	1	0	ATAT
+80_AT	4938	5000	6	12.667114	AAATAC	2	0,31	**ATAA,**C*AA
+80_AT	7972	8000	5	5.984789	AAATT	1	0	AAATT
+80_AT	8406	9134	7	954.684937	AAAATAC	1	0	AAAATAC
+----------------------------
+Annotation Coverage: 0.1382 (1353 / 9791)
+==== stderr ====

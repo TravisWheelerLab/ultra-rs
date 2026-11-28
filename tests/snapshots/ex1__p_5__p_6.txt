@@ -1,0 +1,5 @@
+command: ultra in.fa -p 5 -p 6
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: --period: At Most 1 required but received 2

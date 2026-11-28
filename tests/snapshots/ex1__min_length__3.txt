@@ -1,0 +1,5 @@
+command: ultra in.fa --min_length -3
+status: 255
+==== stdout ====
+==== stderr ====
+Standard exception caught: Could not convert: --min_length = -3

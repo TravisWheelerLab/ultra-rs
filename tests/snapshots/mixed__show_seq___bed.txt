@@ -1,0 +1,81 @@
+command: ultra in.fa --show_seq --bed
+status: 0
+==== stdout ====
+----------------------------
+Maximum repeat period: 100
+Number of model states: 1970
+Total sequence window size: 100200
+DP matrix cells: 21246340
+Threads: 1
+Sequence window queue length: 1024
+Total size: 0.17 GB (187590160 bytes)
+----------------------------
+*Actual memory usage will be slightly greater due to output repeat queue and repeat split matrices
+============================
+{"Version": "@VERSION@", 
+"Parameters": {
+"args": "ultra in.fa --show_seq --bed",
+"in_file": "in.fa",
+"read_all": false,
+"out_file": "",
+"pval": false,
+"p_value_loc": 4.272949,
+"p_value_scale": 1.891360,
+"p_value_freq": 0.000330,
+"ultra_out": false,
+"json_out": false,
+"bed_out": true,
+"max_consensus_period": 1000000,
+"show_seq": true,
+"show_deltas": false,
+"show_trace": false,
+"show_wid": false,
+"show_logo_nums": false,
+"suppress_out": false,
+"produce_mask": false,
+"mask_file": "",
+"mask_with_n": false,
+"threads": 1,
+"window_size": 100000,
+"overlap": 100,
+"windows": 1024,
+"min_score": -100.000000,
+"min_length": 10,
+"min_units": 2,
+"max_period": 100,
+"max_insert": 10,
+"max_delete": 10,
+"a_freq": 0.250000,
+"c_freq": 0.250000,
+"g_freq": 0.250000,
+"t_freq": 0.250000,
+"match_probability": 0.700000,
+"period_decay": 0.850000,
+"transition_nr": 0.010000,
+"transition_rn": 0.050000,
+"transition_ri": 0.020000,
+"transition_rd": 0.020000,
+"transition_ii": 0.020000,
+"transition_dd": 0.020000,
+"no_split": false,
+"max_split": 10,
+"split_threshold": 3.500000,
+"split_depth": 5,
+"min_split_window": 15
+}}
+seq0	1832	1995	CGGCGT
+seq0	2630	2656	CG
+seq1	864	942	ACCCGTT
+seq1	1386	1406	ACTCAG
+seq1	3387	4577	AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCAAGC
+seq1	4532	4771	AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCAAGC
+seq1	4738	5232	AAATCTCATATTGCTGAACTCAAGATTCTCGTGTCAGCGATCCCAAGC
+seq1	5273	5295	ATTTGT
+seq2	390	1630	AAAATACAGAGCAGACCTGTGCTATGGGAGTAATGGTTGCCCGTGCTGCTGCCATCTCCT
+seq2	3027	3358	AGGCCTC
+seq3	843	941	ACT
+seq3	1067	1160	GTT
+seq3	2223	2625	AAAAACTATTGGCATTTAATCTCTGACCAATAC
+----------------------------
+Annotation Coverage: 0.3099 (4318 / 13934)
+==== stderr ====
