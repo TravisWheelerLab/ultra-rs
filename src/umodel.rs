@@ -507,18 +507,6 @@ pub struct UModel {
     pub immediate_transition_to_repeat: bool,
     pub adjust_match_mismatch_matrix: bool,
 
-    /// Charge each of the `order` bases that follow an indel
-    /// `log2(1 - tp_match_to_zero)`, as the C++ does, instead of the
-    /// match-to-match cost. That is cheaper per base than a match state, so
-    /// on a perfect array of a long unit of length P, a path at period P - 1
-    /// (or k * P - 1) with an insertion each copy outscores the true period.
-    /// False by default; `Settings::upstream_compat` turns it on.
-    ///
-    /// When true, the model also keeps the C++'s `tscore * (n - 1)` term for
-    /// an indel of one base. That term is NaN with `--ii 0` or `--dd 0`, so
-    /// no insertion (or deletion) is ever taken, as in the C++.
-    pub upstream_indel_windows: bool,
-
     /// Fill columns past the warm-up with
     /// [`calculate_steady_column`](Self::calculate_steady_column), which
     /// gives the same scores and tracebacks bit for bit. True by default;
@@ -570,7 +558,6 @@ impl UModel {
             tscore: [[0.0; 4]; 4],
             immediate_transition_to_repeat: false,
             adjust_match_mismatch_matrix: true,
-            upstream_indel_windows: false,
             fast_columns: true,
             position_emissions: PositionEmissions::default(),
             order_scratch: OrderScratch::default(),
@@ -696,14 +683,9 @@ impl UModel {
 
     /// Transition cost, in bits, of each of the `order` bases that follow an
     /// indel. Each is a match, so it pays the match-to-match transition as a
-    /// base in a match state does. With `upstream_indel_windows` it pays
-    /// `log2(1 - tp_match_to_zero)` instead, as in the C++.
+    /// base in a match state does.
     fn indel_window_cost(&self) -> f64 {
-        if self.upstream_indel_windows {
-            log2d(1.0 - self.tp_match_to_zero as f64)
-        } else {
-            self.tscore[CT_MATCH as usize][CT_MATCH as usize] as f64
-        }
+        self.tscore[CT_MATCH as usize][CT_MATCH as usize] as f64
     }
 
     /// Fills the current column for symbol `nuc_index` of `sequence` from
@@ -761,9 +743,6 @@ impl UModel {
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
         let window_cost = self.indel_window_cost();
-        // In compat mode a single-base indel keeps the C++'s `t * 0` term, which
-        // is NaN when t is -inf (--ii 0, --dd 0).
-        let keep_zero_term = self.upstream_indel_windows;
 
         let bg = CT_BACKGROUND as usize;
         let ma = CT_MATCH as usize;
@@ -870,7 +849,7 @@ impl UModel {
                         // nothing for a finite t, and with --ii 0 (t = -inf)
                         // it would make the score NaN, so that even
                         // single-base insertions could never be taken.
-                        if d.indel_number > 1 || keep_zero_term {
+                        if d.indel_number > 1 {
                             score += tscore[ins][ins] * (d.indel_number - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -927,7 +906,7 @@ impl UModel {
 
                         score += tscore[ma][del];
                         // As for insertions (--dd 0).
-                        if indel_num > 1 || keep_zero_term {
+                        if indel_num > 1 {
                             score += tscore[del][del] * (indel_num - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -1358,9 +1337,6 @@ impl UModel {
         let period_decay_offset = self.period_decay_offset;
         let immediate = self.immediate_transition_to_repeat;
         let window_cost = self.indel_window_cost();
-        // In compat mode a single-base indel keeps the C++'s `t * 0` term, which
-        // is NaN when t is -inf (--ii 0, --dd 0).
-        let keep_zero_term = self.upstream_indel_windows;
 
         let bg = CT_BACKGROUND as usize;
         let ma = CT_MATCH as usize;
@@ -1457,7 +1433,7 @@ impl UModel {
                         // nothing for a finite t, and with --ii 0 (t = -inf)
                         // it would make the score NaN, so that even
                         // single-base insertions could never be taken.
-                        if d.indel_number > 1 || keep_zero_term {
+                        if d.indel_number > 1 {
                             score += tscore[ins][ins] * (d.indel_number - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -1493,7 +1469,7 @@ impl UModel {
 
                         score += tscore[ma][del];
                         // As for insertions (--dd 0).
-                        if indel_num > 1 || keep_zero_term {
+                        if indel_num > 1 {
                             score += tscore[del][del] * (indel_num - 1) as f32;
                         }
                         // The `order` bases after the indel; see
@@ -1517,8 +1493,8 @@ impl UModel {
 
 #[cfg(test)]
 mod tests {
-    //! Expected values were dumped from the upstream C++ (`umodel.cpp`,
-    //! `umatrix.cpp`, g++ -O3) driven the same way.
+    //! Expected values in the `*_match_cpp` tests were dumped from the
+    //! upstream C++ (`umodel.cpp`, `umatrix.cpp`, g++ -O3) driven the same way.
 
     use super::*;
     use crate::symbol::symbol_for_char;
@@ -1539,7 +1515,6 @@ mod tests {
     }
 
     /// Model configured as `Ultra`'s constructor does with default settings.
-    /// The model of the C++ dumps the values below were taken from.
     fn ultra_model(
         mp: i32,
         ins: i32,
@@ -1548,20 +1523,7 @@ mod tests {
         adjmax: bool,
         immediate: bool,
     ) -> UModel {
-        ultra_model_with(mp, ins, del, mlen, adjmax, immediate, true)
-    }
-
-    fn ultra_model_with(
-        mp: i32,
-        ins: i32,
-        del: i32,
-        mlen: i32,
-        adjmax: bool,
-        immediate: bool,
-        upstream_indel_windows: bool,
-    ) -> UModel {
         let mut m = UModel::new(mp, ins, del, mlen);
-        m.upstream_indel_windows = upstream_indel_windows;
         m.period_decay = 0.85;
         m.set_match_probabilities(0.7);
         m.set_atcg_probabilities(0.25, 0.25, 0.25, 0.25);
@@ -1666,8 +1628,8 @@ mod tests {
         let s = mixed_sequence(800, 13, 21);
         let mlen = s.len() as i32 + 3;
         // The traceback, and whether any score in any column was NaN.
-        let run = |p: f32, fast: bool, compat: bool| {
-            let mut m = ultra_model_with(14, 4, 4, mlen, false, false, compat);
+        let run = |p: f32, fast: bool| {
+            let mut m = ultra_model(14, 4, 4, mlen, false, false);
             m.tp_consecutive_insertion = p;
             m.tp_consecutive_deletion = p;
             m.calculate_scores();
@@ -1690,12 +1652,9 @@ mod tests {
             (m.matrix.traceback[..s.len() + 2].to_vec(), nan)
         };
         for fast in [false, true] {
-            let (path, nan) = run(0.0, fast, false);
+            let (path, nan) = run(0.0, fast);
             assert!(!nan, "NaN score, fast = {fast}");
-            assert_eq!(path, run(1e-30, fast, false).0);
-            // Compat mode keeps the C++ arithmetic, NaN included.
-            assert!(run(0.0, fast, true).1, "no NaN score in compat mode, fast = {fast}");
-            assert!(!run(1e-30, fast, true).1);
+            assert_eq!(path, run(1e-30, fast).0);
         }
     }
 
@@ -1707,7 +1666,7 @@ mod tests {
         let s = mixed_sequence(500, 11, 7);
         let mlen = s.len() as i32 + 3;
         let run = |ins: i32, del: i32, fast: bool| {
-            let mut m = ultra_model_with(12, ins, del, mlen, false, false, false);
+            let mut m = ultra_model(12, ins, del, mlen, false, false);
             m.fast_columns = fast;
             let mut w = SequenceWindow::new(mlen as usize, 0);
             (run_window(&mut m, &mut w, &s), m.matrix.cells_per_column)
@@ -1740,7 +1699,7 @@ mod tests {
         for fast in [false, true] {
             let mut results = Vec::new();
             // Streaming: the window holds only the symbols written so far.
-            let mut m = ultra_model_with(31, 10, 10, mlen, false, false, false);
+            let mut m = ultra_model(31, 10, 10, mlen, false, false);
             m.fast_columns = fast;
             let mut w = SequenceWindow::new(mlen as usize, 0);
             w.length = a.len();
@@ -1765,7 +1724,7 @@ mod tests {
                 continue;
             }
             // The same with every symbol written up front, general path.
-            let mut g = ultra_model_with(31, 10, 10, mlen, false, false, false);
+            let mut g = ultra_model(31, 10, 10, mlen, false, false);
             g.fast_columns = false;
             let mut w2 = SequenceWindow::new(mlen as usize, 0);
             w2.length = a.len();
@@ -1836,16 +1795,15 @@ mod tests {
         for (si, &(mp, ins, del, n)) in shapes.iter().enumerate() {
             let s = mixed_sequence(n, (mp as usize - 1).max(1), 0x9e3779b97f4a7c15 ^ si as u64);
             let mlen = n as i32 + 3;
-            for variant in 0..4 {
-                let (adjmax, immediate, upstream) = match variant {
-                    0 => (false, false, false),
-                    1 => (false, false, true),
-                    2 => (true, false, false),
-                    _ => (false, true, false),
+            for variant in 0..3 {
+                let (adjmax, immediate) = match variant {
+                    0 => (false, false),
+                    1 => (true, false),
+                    _ => (false, true),
                 };
                 let mut hashes = Vec::new();
                 for fast in [false, true] {
-                    let mut m = ultra_model_with(mp, ins, del, mlen, adjmax, immediate, upstream);
+                    let mut m = ultra_model(mp, ins, del, mlen, adjmax, immediate);
                     m.fast_columns = fast;
                     assert!(
                         (m.matrix.steady.min_previous_column as usize) + 10 < n,
@@ -1925,14 +1883,12 @@ mod tests {
         );
     }
 
-    /// The input of `columns_and_tracebacks_match_cpp` under the default
-    /// model, which charges the bases after an indel as matches. The C++
-    /// model puts a repeat in columns 88 to 135 (rows 82 to 84 of `want_fwd`
-    /// in that test); the default model leaves them background.
+    /// The model charges the bases after an indel as matches. On `SEQ_A`
+    /// that leaves columns 72 to 135 background.
     #[test]
     fn default_model_charges_indel_window_bases_as_matches() {
         let mlen = SEQ_A.len() as i32 + 3;
-        let mut m = ultra_model_with(11, 10, 10, mlen, false, false, false);
+        let mut m = ultra_model(11, 10, 10, mlen, false, false);
         let mut w = SequenceWindow::new(mlen as usize, 0);
 
         assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x93e4fb65ae905247);
@@ -1951,52 +1907,6 @@ mod tests {
     }
 
     #[test]
-    fn columns_and_tracebacks_match_cpp() {
-        let mlen = SEQ_A.len() as i32 + 3;
-        let mut m = ultra_model(11, 10, 10, mlen, false, false);
-        assert_eq!(m.matrix.cells_per_column, 101);
-        let mut w = SequenceWindow::new(mlen as usize, 0);
-
-        assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x91a9ffebafb895bb);
-        assert_eq!(
-            (
-                m.matrix.current_column_index,
-                m.matrix.previous_column_index
-            ),
-            (141, 140)
-        );
-        assert_eq!(m.matrix.score_at(140, 0).to_bits(), 0x41bae9fe);
-        assert_eq!(m.matrix.score_at(140, 7).to_bits(), 0x40de5c84);
-        let trace = ints(
-            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 \
-             5 5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 0 \
-             0 0 0 0 0 0 0 82 83 82 82 82 82 82 82 82 82 82 82 82 82 83 82 82 82 82 82 82 82 82 \
-             82 82 82 82 82 82 82 82 82 82 84 82 82 82 82 82 82 82 82 82 82 82 82 82 82 82 82 82 \
-             82 0 0 0",
-        );
-        assert_eq!(m.matrix.traceback, trace);
-
-        let mut fwd = vec![-7; m.matrix.length + 2];
-        assert!(m.matrix.forward_traceback(&mut fwd, SEQ_A.len() as i32, 0));
-        let want_fwd = ints(
-            "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 8 5 5 5 \
-             5 5 5 5 5 5 5 0 0 0 0 0 0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0 0 0 \
-             0 0 0 0 0 0 82 83 82 82 82 82 82 82 82 82 82 82 82 82 83 82 82 82 82 82 82 82 82 82 \
-             82 82 82 82 82 82 82 82 82 84 82 82 82 82 82 82 82 82 82 82 82 82 82 82 0 0 0 0 -7 \
-             -7 -7 -7",
-        );
-        assert_eq!(fwd, want_fwd);
-
-        // A second, shorter window reuses the matrix.
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x6b22681375298aa3);
-        assert_eq!(m.matrix.traceback[15], 32);
-
-        m.matrix.adjust_score_to_zero(5);
-        assert_eq!(m.matrix.last_score_adjustment.to_bits(), 0xc1bbd913);
-        assert_eq!(m.matrix.total_score_adjustment.to_bits(), 0xc1bbd913);
-    }
-
-    #[test]
     fn no_indel_model_matches_cpp() {
         let mlen = SEQ_A.len() as i32 + 3;
         let mut m = ultra_model(7, 0, 0, mlen, false, false);
@@ -2004,15 +1914,17 @@ mod tests {
         assert_eq!(run_window(&mut m, &mut w, SEQ_A), 0x40b63a9eb7c6d539);
     }
 
+    /// Column hashes of the models with `adjust_for_maximum_period` and with
+    /// `immediate_transition_to_repeat`, from this crate's model.
     #[test]
-    fn adjusted_and_immediate_models_match_cpp() {
+    fn adjusted_and_immediate_models() {
         let mlen = SEQ_B.len() as i32 + 3;
         let mut m = ultra_model(5, 2, 1, mlen, true, false);
         let mut w = SequenceWindow::new(mlen as usize, 0);
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x3f3cc269dba4402e);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0xa5b59ec6f3742034);
         assert_eq!(
             run_window(&mut m, &mut w, "ACGNACGACGACG"),
-            0x414aa4cda468176a
+            0x48116a8c4a543ec4
         );
         // Entries past the second window are stale from the first.
         let trace = ints(
@@ -2022,6 +1934,6 @@ mod tests {
         assert_eq!(m.matrix.traceback, trace);
 
         let mut m = ultra_model(9, 3, 2, mlen, false, true);
-        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x6ebe7c72c1de7bb5);
+        assert_eq!(run_window(&mut m, &mut w, SEQ_B), 0x3a614baf77750b0);
     }
 }

@@ -304,7 +304,7 @@ fn run(dir: &Path, input_path: &Path, case_args: &[String], with_input: bool) ->
     fs::copy(crate_root().join("examples/tune_file"), dir.join("tune_file")).unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ultra"));
-    cmd.arg0("ultra").current_dir(dir).env_remove("ULTRA_UPSTREAM_COMPAT");
+    cmd.arg0("ultra").current_dir(dir);
     if with_input {
         cmd.arg("in.fa");
     }

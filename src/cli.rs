@@ -233,18 +233,6 @@ pub struct Settings {
     /// last occurrence wins instead of raising an error (CLI11 `TakeLast`).
     /// Stands in for the parser state the C++ struct keeps inside `CLI::App`.
     pub multi_option: bool,
-
-    /// Score and report repeats as the C++ does (ULTRA 1.2.2 with the fixes
-    /// of pull request 95). Among other things, the model charges the bases
-    /// after an indel as the C++ does (`UModel::upstream_indel_windows`),
-    /// each consensus comes from the single walk of the C++ instead of the
-    /// indel test and realignment of `RepeatRegion::create_logo`, and
-    /// repeats are ordered and joined across windows as in the C++. No
-    /// command-line option sets this. The `ultra` binary turns it on when the
-    /// environment variable `ULTRA_UPSTREAM_COMPAT` is set to anything but
-    /// `0` or the empty string, which is how the differential tests compare
-    /// the output with the C++ byte for byte.
-    pub upstream_compat: bool,
 }
 
 impl Default for Settings {
@@ -320,20 +308,12 @@ impl Default for Settings {
             max_highfi_naming: 20,
             run_without_reader: false,
             multi_option: false,
-            upstream_compat: false,
         }
     }
 }
 
-/// Exit status for a rejected command line or tune file: 2. The C++ exits with 0, and
-/// so does this port when `ULTRA_UPSTREAM_COMPAT` is set.
-pub fn usage_error_code() -> i32 {
-    if std::env::var_os("ULTRA_UPSTREAM_COMPAT").is_some_and(|v| !v.is_empty() && v != "0") {
-        0
-    } else {
-        2
-    }
-}
+/// Exit status for a rejected command line or tune file.
+pub const USAGE_ERROR_CODE: i32 = 2;
 
 /// Why `try_parse_input` stopped before returning a pass/fail verdict. Each
 /// variant is a place where the C++ either calls `exit` or lets a CLI11
@@ -1018,7 +998,7 @@ fn parse_args(settings: &mut Settings, argv: &[String]) -> Result<(), CliExit> {
         match def.kind {
             Kind::Help | Kind::Flag | Kind::FlagF32 => {
                 // `--pval_loc 3`: upstream takes a number only as `--pval_loc=3`.
-                if def.kind == Kind::FlagF32 && value.is_empty() && !settings.upstream_compat && i < args.len() && args[i].parse::<f32>().is_ok() {
+                if def.kind == Kind::FlagF32 && value.is_empty() && i < args.len() && args[i].parse::<f32>().is_ok() {
                     results[idx].push(args[i].clone());
                     i += 1;
                     continue;
@@ -1045,7 +1025,7 @@ fn parse_args(settings: &mut Settings, argv: &[String]) -> Result<(), CliExit> {
                     _ => false,
                 };
                 if collected < 1 {
-                    if i < args.len() && (settings.upstream_compat || !is_option(&args[i])) {
+                    if i < args.len() && !is_option(&args[i]) {
                         results[idx].push(args[i].clone());
                         i += 1;
                     } else {
@@ -1174,7 +1154,7 @@ impl Settings {
     /// Parse arguments (`argv[0]` is the program name) and validate them.
     /// Returns false (after writing a message to stderr) when validation fails.
     /// Like the C++, it exits the process for `--help`, `--cite` (code 0), unknown
-    /// arguments ([`usage_error_code`]) and CLI11 exceptions (code 255, printed the
+    /// arguments ([`USAGE_ERROR_CODE`]) and CLI11 exceptions (code 255, printed the
     /// way `main` does).
     pub fn parse_input(&mut self, argv: &[String]) -> bool {
         let mut err = String::new();
@@ -1189,7 +1169,7 @@ impl Settings {
             }
             Err(CliExit::Extras(msg)) => {
                 eprintln!("Unrecognized flag or argument: {}", msg);
-                std::process::exit(usage_error_code())
+                std::process::exit(USAGE_ERROR_CODE)
             }
             Err(CliExit::Cite) => {
                 crate::writers::print_stdout(CITE_TEXT);
@@ -1252,7 +1232,7 @@ impl Settings {
                 fail("--show_logo is only available with --json\n");
             }
             // The C++ accepts it (and ignores it) without --json.
-            if self.show_wid && !self.upstream_compat {
+            if self.show_wid {
                 fail("--show_wid is only available with --json\n");
             }
         }
@@ -1271,11 +1251,7 @@ impl Settings {
         }
 
         if self.mask_file.is_empty() && self.mask_with_n {
-            fail(if self.upstream_compat {
-                "--maskn requires an output file path provided to --mask\n"
-            } else {
-                "--nmask requires an output file path provided to --mask\n"
-            });
+            fail("--nmask requires an output file path provided to --mask\n");
         }
 
         if self.threads < 1 {
@@ -1284,7 +1260,7 @@ impl Settings {
 
         // long long vs unsigned long long: the signed side converts to unsigned.
         if self.window_size != -1 && (self.window_size as u64) < self.max_period {
-            fail(if self.upstream_compat { "--winsize cannot be smaller than --period\n" } else { "--win_size cannot be smaller than --period\n" });
+            fail("--win_size cannot be smaller than --period\n");
         }
 
         if self.windows < self.threads as i64 {
@@ -1409,7 +1385,7 @@ impl Settings {
         }
 
         if self.split_threshold <= 0.0 {
-            fail(if self.upstream_compat { "--splitval must be > 0.0\n" } else { "--split_threshold must be > 0.0\n" });
+            fail("--split_threshold must be > 0.0\n");
         }
 
         if self.tune_fdr < 0.0 || self.tune_fdr > 1.0 {
@@ -1432,11 +1408,7 @@ impl Settings {
         }
 
         if !self.tune_param_path.is_empty() && (self.tune_medium || self.tune_large) {
-            fail(if self.upstream_compat {
-                "Cannot use both --tune_file and (--tune_small or --tune_large).\n"
-            } else {
-                "Cannot use both --tune_file and (--tune_medium or --tune_large).\n"
-            });
+            fail("Cannot use both --tune_file and (--tune_medium or --tune_large).\n");
         }
 
         let mut c = 0;
@@ -1782,7 +1754,7 @@ pub fn large_tune_settings() -> Vec<String> {
 
 /// Read parameter strings, one per non-empty line, from a tune file. Each line
 /// is validated by parsing it as a full command line (so, as in the C++, its
-/// first token is consumed as the program name). Exits with code 0 on a bad
+/// first token is consumed as the program name). Exits with [`USAGE_ERROR_CODE`] on a bad
 /// file or line.
 pub fn tune_settings_for_path(path: &str) -> Vec<String> {
     let mut settings = Vec::new();
@@ -1794,7 +1766,7 @@ pub fn tune_settings_for_path(path: &str) -> Vec<String> {
         }
         Err(_) => {
             eprintln!("Failed to open settings file: {}", path);
-            std::process::exit(usage_error_code());
+            std::process::exit(USAGE_ERROR_CODE);
         }
     }
 
@@ -1816,7 +1788,7 @@ pub fn tune_settings_for_path(path: &str) -> Vec<String> {
             test_settings.set_multi_option();
             if !test_settings.parse_input(&argv) {
                 eprintln!("Invalid arguments on line {} in tune file. \"{}\"", line_num, line);
-                std::process::exit(usage_error_code());
+                std::process::exit(USAGE_ERROR_CODE);
             }
             settings.push(line.to_string());
         }
@@ -1848,8 +1820,7 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Parse like the C++ binary up to `assign_settings`; report the outcome class
-    /// the way the reference run was classified.
+    /// Parse up to `assign_settings`; report the outcome class and the message.
     fn classify_parse(a: &[&str]) -> (String, String) {
         let mut s = Settings::new();
         let mut err = String::new();
@@ -1864,7 +1835,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_cases_match_reference() {
+    fn parse_cases_give_the_listed_outcomes() {
         for (a, kind, text) in PARSE_CASES {
             let (k, t) = classify_parse(a);
             assert_eq!(&k, kind, "outcome for {:?}", a);
@@ -1885,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn json_cases_match_reference() {
+    fn json_cases_give_the_listed_settings() {
         for (a, expected) in JSON_CASES {
             let mut s = Settings::new();
             let mut err = String::new();

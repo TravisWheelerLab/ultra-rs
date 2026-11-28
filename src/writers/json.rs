@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use super::{c_str, json_escape, pval_for_score, to_string_f32, to_string_f64, RepeatFileWriter};
+use super::{c_str, json_escape, pval_for_score, to_string_f32, RepeatFileWriter};
 use crate::cli::Settings;
 use crate::repeat::RepeatRegion;
 
@@ -144,9 +144,7 @@ impl RepeatFileWriter for JSONFileWriter {
             // %g as in the TSV: the C++ prints %f, so every p-value below
             // 5e-7 (the best-scoring repeats) came out as 0.000000.
             // JSON has no inf or nan (odd --pval_loc/--pval_scale values give them)
-            let text = if settings.upstream_compat {
-                to_string_f64(pval)
-            } else if pval.is_finite() {
+            let text = if pval.is_finite() {
                 super::fmt_g(pval)
             } else {
                 "null".to_string()
@@ -169,7 +167,7 @@ impl RepeatFileWriter for JSONFileWriter {
 
         // --max_consensus applies to JSON as to TSV and BED (the C++ ignores
         // it here): "." for a period above it, no consensus below 0.
-        let hide_consensus = !settings.upstream_compat && settings.max_consensus_period < repeat.repeat_period;
+        let hide_consensus = settings.max_consensus_period < repeat.repeat_period;
         if !hide_consensus {
             Self::output_json_key_value(out, "Consensus", &repeat.string_consensus, true)?;
         } else if settings.max_consensus_period >= 0 {
@@ -177,7 +175,7 @@ impl RepeatFileWriter for JSONFileWriter {
         }
 
         // --show_wid: the C++ accepts it and prints nothing.
-        if settings.show_wid && !settings.upstream_compat {
+        if settings.show_wid {
             kv(out, "WindowID", repeat.read_id.to_string())?;
         }
 
@@ -292,9 +290,6 @@ mod tests {
         assert!(t.contains("\"Consensus\": \".\",") && !t.contains("\"CA\"") && !t.contains("\"TA\""), "{t}");
         s.max_consensus_period = -1;
         assert!(!text(&s).contains("\"Consensus\""), "{}", text(&s));
-        s.upstream_compat = true;
-        let t = text(&s);
-        assert!(t.contains("\"Consensus\": \"CA\"") && !t.contains("WindowID"), "{t}");
     }
 
     /// Small p-values keep their digits (%g, as in the TSV); the C++ prints
@@ -311,8 +306,6 @@ mod tests {
             String::from_utf8(out).unwrap()
         };
         assert!(text(&s).contains("\"PVal\": 6.45705e-13,"), "{}", text(&s));
-        s.upstream_compat = true;
-        assert!(text(&s).contains("\"PVal\": 0.000000,"), "{}", text(&s));
     }
 
     #[test]

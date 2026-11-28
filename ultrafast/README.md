@@ -89,8 +89,6 @@ plus the sequence. Units so long that three copies would pass 2^28 cells (about 
 windows shorter than three units.
 
 ### Environment
-- `ULTRA_UPSTREAM_COMPAT`: as for `ultra`, anything but empty or `0` runs ULTRA with the C++-compatible
-  scoring.
 - `ULTRAFAST_WINDOW` (FasTAN's scan window in bp, default 2,000,000; 0 = each stretch whole, as C FasTAN)
   and `ULTRAFAST_SPLIT_DEBUG` (prints split decisions to stderr) are for testing. So are
   `ULTRAFAST_JOIN_DEBUG` (prints each join candidate and its cost) and `ULTRAFAST_JOIN_COST` (the highest

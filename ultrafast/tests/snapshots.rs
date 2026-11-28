@@ -111,7 +111,6 @@ fn run(dir: &Path, input: &[u8], args: &[String]) -> Outcome {
     fs::write(dir.join("in.fa"), input).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
         .current_dir(dir)
-        .env_remove("ULTRA_UPSTREAM_COMPAT")
         .args(args)
         .arg("in.fa")
         .output()

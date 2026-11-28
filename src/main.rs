@@ -5,7 +5,7 @@ use std::io::{self, BufWriter, Write};
 
 use ultra_repeats::cli::{
     large_tune_settings, medium_tune_settings, small_tune_settings, tune_settings_for_path,
-    Settings,
+    Settings, USAGE_ERROR_CODE,
 };
 use ultra_repeats::mask::output_masked_fasta;
 use ultra_repeats::ultra::Ultra;
@@ -28,22 +28,13 @@ fn run(ultra: &mut Ultra) {
     }
 }
 
-/// Fresh settings, with `upstream_compat` taken from the environment
-/// variable `ULTRA_UPSTREAM_COMPAT` (see the field's documentation).
-fn new_settings() -> Settings {
-    let mut settings = Settings::new();
-    settings.upstream_compat = std::env::var_os("ULTRA_UPSTREAM_COMPAT")
-        .is_some_and(|v| !v.is_empty() && v != "0");
-    settings
-}
-
 /// C++ `main_wrapper`. Returns the process exit status.
 fn main_wrapper(argv: &[String]) -> i32 {
     // Prepare settings
-    let mut settings = new_settings();
+    let mut settings = Settings::new();
     settings.prepare_settings();
     if !settings.parse_input(argv) {
-        exit(ultra_repeats::cli::usage_error_code());
+        exit(USAGE_ERROR_CODE);
     }
 
     settings.assign_settings();
@@ -81,11 +72,11 @@ fn main_wrapper(argv: &[String]) -> i32 {
         let mut best_coverage_index: i32 = -1;
         let mut best_coverage: f64 = 0.0;
         for arg_string in &param_strings {
-            let mut search_setting = new_settings();
+            let mut search_setting = Settings::new();
             search_setting.prepare_settings();
             search_setting.set_multi_option();
             if !search_setting.parse_multi_input(argv, arg_string) {
-                exit(ultra_repeats::cli::usage_error_code());
+                exit(USAGE_ERROR_CODE);
             }
             search_setting.assign_settings();
             // The search runs write nothing, so they must not open (and so
@@ -159,11 +150,11 @@ fn main_wrapper(argv: &[String]) -> i32 {
                 param_strings[best]
             );
 
-            settings = new_settings();
+            settings = Settings::new();
             settings.prepare_settings();
             settings.set_multi_option();
             if !settings.parse_multi_input(argv, &param_strings[best]) {
-                exit(ultra_repeats::cli::usage_error_code());
+                exit(USAGE_ERROR_CODE);
             }
             settings.assign_settings();
         } else {
@@ -190,7 +181,7 @@ fn main_wrapper(argv: &[String]) -> i32 {
     if !settings.disable_summary {
         seq_length = reader_total_seq_length(&ultra);
         // an empty input: 0, where the C++ prints -nan
-        let coverage_ratio = if seq_length == 0 && !settings.upstream_compat { 0.0 } else { true_coverage as f64 / seq_length as f64 };
+        let coverage_ratio = if seq_length == 0 { 0.0 } else { true_coverage as f64 / seq_length as f64 };
         say!("----------------------------");
         say!(
             "Annotation Coverage: {} ({} / {})",
@@ -285,7 +276,7 @@ fn check_memory(settings: &mut Settings) {
             ),
             _ => eprintln!("These settings need more memory than can be addressed; lower --period, --win_size, --overlap or --windows"),
         }
-        std::process::exit(ultra_repeats::cli::usage_error_code());
+        std::process::exit(USAGE_ERROR_CODE);
     }
 }
 

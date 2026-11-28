@@ -184,8 +184,6 @@ fn main() -> Result<()> {
         rescore_only: a.rescore_only,
         delta_model,
         delta_scale: a.delta_scale,
-        // as for ultra: anything but empty or 0 selects the C++-compatible scoring
-        ultra_upstream_compat: std::env::var_os("ULTRA_UPSTREAM_COMPAT").is_some_and(|v| !v.is_empty() && v != "0"),
     };
     let h = ultrafast::hybrid(&a.input, &opt)?;
     if h.n_unmatched > 0 {

@@ -277,9 +277,8 @@ impl ultra_repeats::writers::RepeatFileWriter for Collect {
 /// ULTRA's calls at its defaults with maximum period `period` on the FASTA file
 /// `input`: what `ultra -p period -t threads --json --show_delta` would write,
 /// taken from this repository's library in memory (no files are written and
-/// nothing is printed but the warning described at `Collect`). `upstream_compat` selects the C++-compatible scoring,
-/// as `ULTRA_UPSTREAM_COMPAT` does for `ultra`.
-pub fn run_ultra(input: &str, period: usize, threads: usize, upstream_compat: bool) -> anyhow::Result<Vec<UltraRecord>> {
+/// nothing is printed but the warning described at `Collect`).
+pub fn run_ultra(input: &str, period: usize, threads: usize) -> anyhow::Result<Vec<UltraRecord>> {
     use ultra_repeats::{cli::Settings, ultra::Ultra};
     // ULTRA exits the process on an unreadable file; fail here with a message instead
     std::fs::File::open(input).map_err(|e| anyhow::anyhow!("{input}: {e}"))?;
@@ -291,7 +290,6 @@ pub fn run_ultra(input: &str, period: usize, threads: usize, upstream_compat: bo
         .map(|s| s.to_string())
         .collect();
     let mut s = Settings::new();
-    s.upstream_compat = upstream_compat;
     s.prepare_settings();
     s.in_file = input.to_string();
     let mut err = String::new();
@@ -1037,9 +1035,6 @@ pub struct HybridOptions {
     pub delta_model: DeltaModel,
     /// Multiply every delta and Score by this.
     pub delta_scale: f64,
-    /// Run ULTRA with the C++-compatible scoring (`ultra` does this when the
-    /// environment variable `ULTRA_UPSTREAM_COMPAT` is set).
-    pub ultra_upstream_compat: bool,
 }
 
 impl Default for HybridOptions {
@@ -1057,7 +1052,6 @@ impl Default for HybridOptions {
             rescore_only: false,
             delta_model: DeltaModel::Ultra,
             delta_scale: 1.0,
-            ultra_upstream_compat: false,
         }
     }
 }
@@ -1185,7 +1179,7 @@ fn hybrid_in_pool(input: &str, opt: &HybridOptions, ultra_threads: usize) -> any
     let seqs = read_fasta(input)?;
     check_names(&seqs)?;
     let fastan = || if opt.rescore_only { Vec::new() } else { annotate(&seqs, &fo) };
-    let ultra = |p: usize| run_ultra(input, p, ultra_threads, opt.ultra_upstream_compat);
+    let ultra = |p: usize| run_ultra(input, p, ultra_threads);
     let (arrays, ultra_calls) = match ultra_period {
         None => (fastan(), None),
         // one thread: one after the other

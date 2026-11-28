@@ -269,15 +269,14 @@ mod tests {
     /// reads work and return each column's scores; both DP paths agree.
     #[test]
     fn analyze_window_reads_indel_rows() {
-        // The input and model of umodel's columns_and_tracebacks_match_cpp,
-        // whose traceback goes through insertion and deletion cells.
+        // The input and model of umodel's
+        // default_model_charges_indel_window_bases_as_matches.
         let s = "ACGTTGCANNNNGCAGCAGCAGCAGCATCAGCAGCAGCGCAGCAGCAGGTTACGATATATATANATATATATCGATGCTAGTACCAGTCAGTTAGCAGTCAGTTAGCAGTCATCAGTTAGCAGGTCAGTTAGCACCGTA";
         let mlen = s.len() as i32 + 3;
         let mut runs = Vec::new();
         for fast in [false, true] {
             let mut m = UModel::new(11, 10, 10, mlen);
             m.fast_columns = fast;
-            m.upstream_indel_windows = true;
             m.period_decay = 0.85;
             m.set_match_probabilities(0.7);
             m.set_atcg_probabilities(0.25, 0.25, 0.25, 0.25);
